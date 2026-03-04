@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html>
+
 <head>
-<title>Shashank Patil | Cybersecurity</title>
+<title>Shashank Patil | Cybersecurity Portfolio</title>
 
 <style>
 
@@ -13,14 +14,15 @@ margin:0;
 padding:0;
 }
 
-header{
-text-align:center;
-padding:40px;
+nav{
+padding:15px;
 border-bottom:1px solid #00ff9c;
 }
 
-h1{
-font-size:40px;
+nav a{
+color:#00ff9c;
+margin-right:20px;
+text-decoration:none;
 }
 
 section{
@@ -30,11 +32,22 @@ padding:40px;
 .project{
 border:1px solid #00ff9c;
 padding:20px;
-margin:20px;
+margin:20px 0;
 }
 
-a{
+#terminal input{
+background:black;
 color:#00ff9c;
+border:1px solid #00ff9c;
+padding:10px;
+width:300px;
+}
+
+canvas{
+position:fixed;
+top:0;
+left:0;
+z-index:-1;
 }
 
 </style>
@@ -43,26 +56,33 @@ color:#00ff9c;
 
 <body>
 
-<header>
+<canvas id="matrix"></canvas>
 
-<h1>Shashank Patil</h1>
-
-<p>
-Cybersecurity Engineer | Machine Learning Enthusiast
-</p>
-
-</header>
+<nav>
+<a href="index.html">Home</a>
+<a href="blog.html">Blog</a>
+<a href="https://github.com/b17w1z4rd">GitHub</a>
+</nav>
 
 <section>
 
-<h2>$ whoami</h2>
+<h1>$ whoami</h1>
 
 <p>
-Computer Science Student at PES University.
-Cybersecurity Head at ISFCR.
 
-Focused on malware analysis, threat detection,
-offensive security and machine learning systems.
+Shashank Patil  
+Cybersecurity Researcher | Machine Learning Engineer  
+
+Computer Science @ PES University  
+Cybersecurity Head @ ISFCR  
+
+Focused on:
+
+• Malware Analysis  
+• Threat Detection  
+• Machine Learning for Security  
+• Offensive Security  
+
 </p>
 
 </section>
@@ -73,15 +93,18 @@ offensive security and machine learning systems.
 
 <p>
 
+Languages  
 Python • C • C++ • Java • Go • Rust • Perl
 
 <br><br>
 
+Security Tools  
 Kali Linux • Wazuh • LimaCharlie • Hive • Docker • ELK
 
 <br><br>
 
-Machine Learning • Random Forest • SVM • CNN
+Machine Learning  
+Random Forest • SVM • CNN • HMM
 
 </p>
 
@@ -89,68 +112,150 @@ Machine Learning • Random Forest • SVM • CNN
 
 <section>
 
-<h2>$ projects</h2>
+<h2>$ terminal</h2>
 
-<div class="project">
+<div id="terminal">
 
-<h3>Ransomware Detection System</h3>
-
-<p>
-
-Hybrid ML + behavioral detection pipeline using
-Wazuh and LimaCharlie to detect ransomware activity.
-
-</p>
+<input id="command" placeholder="type command">
 
 </div>
 
-<div class="project">
-
-<h3>Speech Emotion Recognition</h3>
-
-<p>
-
-CNN model trained on RAVDESS dataset to detect
-human emotions from speech.
-
-</p>
-
-</div>
-
-<div class="project">
-
-<h3>Cybersecurity Tools</h3>
-
-<p>
-
-Developed honeypots, reverse shells, keyloggers
-and firewall systems.
-
-</p>
-
-</div>
+<p id="output"></p>
 
 </section>
 
 <section>
 
-<h2>$ contact</h2>
+<h2>$ github projects</h2>
 
-<p>
-
-Email: shashviru@gmail.com
-
-<br>
-
-Phone: +91 9110881825
-
-<br>
-
-Location: Bengaluru, India
-
-</p>
+<div id="repos"></div>
 
 </section>
+
+<section>
+
+<h2>$ github activity</h2>
+
+<img src="https://ghchart.rshah.org/b17w1z4rd" />
+
+</section>
+
+<script>
+
+/* MATRIX RAIN */
+
+const canvas = document.getElementById("matrix");
+const ctx = canvas.getContext("2d");
+
+canvas.height = window.innerHeight;
+canvas.width = window.innerWidth;
+
+let letters = "01";
+letters = letters.split("");
+
+let fontSize = 14;
+let columns = canvas.width/fontSize;
+
+let drops = [];
+
+for(let x = 0; x < columns; x++)
+drops[x] = 1;
+
+function draw(){
+
+ctx.fillStyle="rgba(0,0,0,0.05)";
+ctx.fillRect(0,0,canvas.width,canvas.height);
+
+ctx.fillStyle="#0f0";
+ctx.font=fontSize+"px monospace";
+
+for(let i=0;i<drops.length;i++){
+
+let text = letters[Math.floor(Math.random()*letters.length)];
+
+ctx.fillText(text,i*fontSize,drops[i]*fontSize);
+
+if(drops[i]*fontSize>canvas.height && Math.random()>0.975)
+drops[i]=0;
+
+drops[i]++;
+
+}
+
+}
+
+setInterval(draw,33);
+
+
+/* TERMINAL */
+
+document.getElementById("command").addEventListener("keydown", function(e){
+
+if(e.key==="Enter"){
+
+let cmd=this.value;
+let output=document.getElementById("output");
+
+if(cmd==="whoami"){
+output.innerHTML="Shashank Patil - Cybersecurity Researcher";
+}
+
+else if(cmd==="projects"){
+output.innerHTML="Scroll down to see my GitHub projects.";
+}
+
+else if(cmd==="blog"){
+window.location="blog.html";
+}
+
+else if(cmd==="github"){
+window.open("https://github.com/b17w1z4rd");
+}
+
+else if(cmd==="help"){
+output.innerHTML="commands: whoami | projects | blog | github";
+}
+
+else{
+output.innerHTML="command not found";
+}
+
+this.value="";
+
+}
+
+});
+
+
+/* LOAD GITHUB REPOS */
+
+fetch("https://api.github.com/users/b17w1z4rd/repos")
+.then(response => response.json())
+.then(data => {
+
+let repoContainer=document.getElementById("repos");
+
+data.forEach(repo => {
+
+let div=document.createElement("div");
+
+div.className="project";
+
+div.innerHTML=`
+
+<h3>${repo.name}</h3>
+<p>${repo.description || "No description provided"}</p>
+<a href="${repo.html_url}" target="_blank">View Repository</a>
+
+`;
+
+repoContainer.appendChild(div);
+
+});
+
+});
+
+</script>
 
 </body>
 </html>
