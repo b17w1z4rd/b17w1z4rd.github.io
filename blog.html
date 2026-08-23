@@ -1,118 +1,156 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Writing — Shashank Patil</title>
+<meta name="description" content="Security research, CTF technique writeups, and detection engineering notes by Shashank Patil.">
 
-<title>Blog | Shashank Patil</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 
 <style>
-
-body{
-background:black;
-color:#00ff9c;
-font-family:monospace;
+:root{
+--bg:#08080a;--bg-2:#0d0d10;--surface:#141418;--surface-2:#1b1b21;
+--border:rgba(255,255,255,0.08);--border-strong:rgba(255,255,255,0.14);
+--text:#f5f5f7;--dim:#8a8a91;--dim-2:#6a6a72;
+--accent:#30d158;--accent-soft:rgba(48,209,88,0.14);--accent-line:rgba(48,209,88,0.35);--cyan:#40d0e0;
+--radius:18px;--ease:cubic-bezier(0.2,0.8,0.2,1);--maxw:900px;
+--sans:-apple-system,BlinkMacSystemFont,'Inter',system-ui,sans-serif;
+--mono:ui-monospace,'SF Mono','JetBrains Mono',Menlo,monospace;
 }
+*{margin:0;padding:0;box-sizing:border-box;}
+html{scroll-behavior:smooth;}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.5;-webkit-font-smoothing:antialiased;overflow-x:hidden;}
+::selection{background:var(--accent-soft);color:#eaffef;}
+a{color:inherit;text-decoration:none;}
 
-nav{
-padding:15px;
-border-bottom:1px solid #00ff9c;
-}
+.aurora{position:fixed;inset:0;z-index:-2;overflow:hidden;pointer-events:none;background:var(--bg);}
+.aurora::before{content:"";position:absolute;width:60vw;height:60vw;left:-15vw;top:-25vw;border-radius:50%;filter:blur(90px);opacity:0.4;background:radial-gradient(circle,rgba(48,209,88,0.28),transparent 60%);animation:drift 40s var(--ease) infinite alternate;}
+@keyframes drift{from{transform:translate(0,0) scale(1);}to{transform:translate(16vw,10vw) scale(1.2);}}
+.grain{position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:0.04;background-image:radial-gradient(rgba(255,255,255,0.9) 0.5px,transparent 0.5px);background-size:3px 3px;}
 
-nav a{
-color:#00ff9c;
-margin-right:20px;
-text-decoration:none;
-}
+nav{position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;justify-content:space-between;padding:16px clamp(20px,5vw,48px);border-bottom:1px solid transparent;transition:background 0.4s var(--ease),border-color 0.4s var(--ease),backdrop-filter 0.4s var(--ease);}
+nav.scrolled{background:rgba(8,8,10,0.72);backdrop-filter:blur(20px) saturate(160%);border-bottom:1px solid var(--border);}
+.brand{font-family:var(--mono);font-size:14px;font-weight:500;}
+.brand b{color:var(--accent);font-weight:700;}
+.navlinks{display:flex;gap:8px;align-items:center;}
+.navlinks a{font-size:14px;color:var(--dim);padding:8px 14px;border-radius:100px;transition:color 0.25s var(--ease),background 0.25s var(--ease);}
+.navlinks a:hover{color:var(--text);background:var(--surface);}
+.navlinks a.cta{color:var(--accent);border:1px solid var(--accent-line);}
+.navlinks a.cta:hover{background:var(--accent-soft);}
 
+header{padding:clamp(140px,20vh,200px) clamp(20px,5vw,48px) 40px;}
+.head-wrap{max-width:var(--maxw);margin:0 auto;}
+.eyebrow{font-family:var(--mono);font-size:13px;letter-spacing:0.16em;text-transform:uppercase;color:var(--accent);margin-bottom:20px;}
+header h1{font-size:clamp(2.6rem,8vw,5rem);font-weight:800;letter-spacing:-0.035em;line-height:1;margin-bottom:20px;}
+header p{color:var(--dim);font-size:clamp(1.05rem,2.4vw,1.35rem);max-width:560px;}
+
+main{max-width:var(--maxw);margin:0 auto;padding:20px clamp(20px,5vw,48px) 120px;}
 .post{
-border:1px solid #00ff9c;
-padding:20px;
-margin:20px;
+display:block;background:linear-gradient(160deg,var(--surface),var(--bg-2));
+border:1px solid var(--border);border-radius:var(--radius);padding:clamp(24px,4vw,36px);
+margin-bottom:20px;position:relative;overflow:hidden;
+transition:border-color 0.3s var(--ease),transform 0.3s var(--ease);
 }
+.post::after{content:"";position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--accent-line),transparent);opacity:0;transition:opacity 0.4s var(--ease);}
+.post:hover{border-color:var(--border-strong);transform:translateY(-4px);}
+.post:hover::after{opacity:1;}
+.post .tag{font-family:var(--mono);font-size:12px;color:var(--accent);letter-spacing:0.05em;margin-bottom:14px;}
+.post h2{font-size:clamp(1.4rem,4vw,2rem);font-weight:700;letter-spacing:-0.02em;margin-bottom:12px;}
+.post p{color:var(--dim);font-size:clamp(0.95rem,2vw,1.05rem);max-width:640px;margin-bottom:20px;}
+.post .more{font-family:var(--mono);font-size:13px;color:var(--accent);display:inline-flex;align-items:center;gap:7px;}
+.post .arrow{transition:transform 0.25s var(--ease);}
+.post:hover .arrow{transform:translate(3px,-3px);}
 
+.reveal{opacity:0;transform:translateY(28px);transition:opacity 0.8s var(--ease),transform 0.8s var(--ease);}
+.reveal.in{opacity:1;transform:none;}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px;}
+
+footer{border-top:1px solid var(--border);padding:50px clamp(20px,5vw,48px);}
+.foot{max-width:var(--maxw);margin:0 auto;font-family:var(--mono);font-size:12px;color:var(--dim-2);display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;}
+.foot a{color:var(--dim);}.foot a:hover{color:var(--accent);}
+
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition-duration:0.01ms!important;}.reveal{opacity:1;transform:none;}.aurora::before{animation:none;}html{scroll-behavior:auto;}}
 </style>
-
 </head>
 
 <body>
 
-<nav>
+<div class="aurora"></div>
+<div class="grain"></div>
+
+<nav id="nav">
+<div class="brand"><b>~/</b>shashank</div>
+<div class="navlinks">
 <a href="index.html">Home</a>
-<a href="blog.html">Blog</a>
-<a href="https://github.com/b17w1z4rd">GitHub</a>
+<a href="blog.html">Writing</a>
+<a href="https://github.com/b17w1z4rd" class="cta">GitHub &#8599;</a>
+</div>
 </nav>
 
-<h1>Security Research & CTF Writeups</h1>
+<header>
+<div class="head-wrap">
+<div class="eyebrow">Writing</div>
+<h1>Security research<br>&amp; CTF writeups.</h1>
+<p>Detection engineering notes, capture-the-flag technique breakdowns, and the occasional long walk through four years of breaking things.</p>
+</div>
+</header>
 
-<div class="post">
+<main>
 
+<a href="posts/four-years-of-breaking-things.html" class="post reveal">
+<div class="tag">JOURNEY</div>
 <h2>Four Years of Breaking Things</h2>
+<p>From grinding HackTheBox boxes and CTF crypto to building the detection that catches the attack — how offense and defense stopped being two separate hobbies.</p>
+<span class="more">Read post <span class="arrow">&#8599;</span></span>
+</a>
 
-<p>
-
-From grinding HackTheBox boxes and CTF crypto to building the detection that catches the attack — how offense and defense stopped being two separate hobbies.
-
-</p>
-
-<a href="posts/four-years-of-breaking-things.html">Read Post</a>
-
-</div>
-
-<div class="post">
-
+<a href="posts/ctf-crypto.html" class="post reveal">
+<div class="tag">CRYPTO</div>
 <h2>CTF Crypto: The Attacks I Reach For</h2>
+<p>RSA with structured primes, MT19937 state recovery, LCG lattice attacks, and one genuinely exotic key-agreement scheme — the crypto techniques I keep coming back to.</p>
+<span class="more">Read post <span class="arrow">&#8599;</span></span>
+</a>
 
-<p>
+<a href="posts/ctf-pwn-web-forensics.html" class="post reveal">
+<div class="tag">CTF</div>
+<h2>Pwn, Web, Forensics &amp; AI</h2>
+<p>ROP chains, JWT forgery, XXE and LaTeX injection, USB keystroke reconstruction, and prompt injection against AI agents — everything on the scoreboard that isn't crypto.</p>
+<span class="more">Read post <span class="arrow">&#8599;</span></span>
+</a>
 
-RSA with structured primes, MT19937 state recovery, LCG lattice attacks, and one genuinely exotic key-agreement scheme — the crypto techniques I keep coming back to.
-
-</p>
-
-<a href="posts/ctf-crypto.html">Read Post</a>
-
-</div>
-
-<div class="post">
-
-<h2>CTF: Pwn, Web, Forensics & AI</h2>
-
-<p>
-
-ROP chains, JWT forgery, XXE and LaTeX injection, USB keystroke reconstruction, and prompt injection against AI agents — everything on the scoreboard that isn't crypto.
-
-</p>
-
-<a href="posts/ctf-pwn-web-forensics.html">Read Post</a>
-
-</div>
-
-<div class="post">
-
+<a href="posts/pentesterlab-pro.html" class="post reveal">
+<div class="tag">PRACTICE</div>
 <h2>PentesterLab PRO: Five Badge Tracks</h2>
+<p>Working the API, Unix, SQL injection, Android, and Java deserialization tracks end to end — what each one actually teaches.</p>
+<span class="more">Read post <span class="arrow">&#8599;</span></span>
+</a>
 
-<p>
-
-Working the API, Unix, SQL injection, Android, and Java deserialization tracks end to end — what each one actually teaches.
-
-</p>
-
-<a href="posts/pentesterlab-pro.html">Read Post</a>
-
-</div>
-
-<div class="post">
-
+<a href="posts/hackthebox.html" class="post reveal">
+<div class="tag">HTB</div>
 <h2>93 Boxes</h2>
+<p>What grinding ninety-plus HackTheBox and TryHackMe machines actually teaches — the methodology behind the volume, and the boxes that stuck.</p>
+<span class="more">Read post <span class="arrow">&#8599;</span></span>
+</a>
 
-<p>
+</main>
 
-What grinding ninety-plus HackTheBox and TryHackMe machines actually teaches — the methodology behind the volume, and the boxes that stuck.
-
-</p>
-
-<a href="posts/hackthebox.html">Read Post</a>
-
+<footer>
+<div class="foot">
+<span>&copy; 2026 Shashank Patil &middot; b17w1z4rd</span>
+<span><a href="index.html">home</a> &middot; <a href="https://github.com/b17w1z4rd">github</a> &middot; <a href="mailto:shashviru@gmail.com">email</a></span>
 </div>
+</footer>
+
+<script>
+const nav=document.getElementById('nav');
+addEventListener('scroll',()=>nav.classList.toggle('scrolled',scrollY>40),{passive:true});
+const io=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:0.1,rootMargin:'0px 0px -6% 0px'});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+</script>
 
 </body>
 </html>
