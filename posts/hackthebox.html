@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>93 Boxes | Shashank Patil</title>
+<meta name="description" content="What grinding ninety-plus HackTheBox and TryHackMe machines actually teaches — the methodology behind the volume, and the boxes that stuck.">
+
+<style>
+
+body{
+background:black;
+color:#00ff9c;
+font-family:monospace;
+margin:0;
+padding:0;
+}
+
+nav{
+padding:15px;
+border-bottom:1px solid #00ff9c;
+}
+
+nav a{
+color:#00ff9c;
+margin-right:20px;
+text-decoration:none;
+}
+
+nav a:hover{
+text-decoration:underline;
+}
+
+main{
+max-width:800px;
+margin:0 auto;
+padding:40px 20px 80px 20px;
+line-height:1.75;
+font-size:15px;
+}
+
+h1{
+line-height:1.3;
+}
+
+h2{
+margin-top:55px;
+border-bottom:1px solid #00ff9c;
+padding-bottom:8px;
+}
+
+h3{
+margin-top:35px;
+}
+
+a{
+color:#00ff9c;
+}
+
+.meta{
+opacity:0.65;
+font-size:13px;
+margin-bottom:40px;
+}
+
+code{
+background:#062;
+color:#c9ffe8;
+padding:1px 5px;
+}
+
+pre{
+border:1px solid #00ff9c;
+padding:15px;
+overflow-x:auto;
+font-size:13px;
+line-height:1.5;
+}
+
+pre code{
+background:none;
+color:#00ff9c;
+padding:0;
+}
+
+blockquote{
+border-left:3px solid #00ff9c;
+margin:30px 0;
+padding:5px 0 5px 20px;
+opacity:0.9;
+}
+
+ul{
+padding-left:20px;
+}
+
+li{
+margin-bottom:8px;
+}
+
+footer{
+border-top:1px solid #00ff9c;
+margin-top:60px;
+padding-top:20px;
+font-size:13px;
+opacity:0.8;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<nav>
+<a href="../index.html">Home</a>
+<a href="../blog.html">Blog</a>
+<a href="https://github.com/b17w1z4rd">GitHub</a>
+</nav>
+
+<main>
+
+<h1>$ cat 93-boxes.md</h1>
+
+<p class="meta">
+Shashank Patil &middot; 93+ machines across HackTheBox and TryHackMe
+</p>
+
+<p>
+Ninety-plus boxes is a lot of <code>nmap</code>. This post isn't a walkthrough of any single one — it's what the volume actually bought me, because the exploits are the least transferable thing you take away from a machine. The transferable thing is a sense of where people hide their mistakes.
+</p>
+
+<h2>$ what the reps are for</h2>
+
+<p>
+Everyone starts the same way: a VPN config, a target IP, and the slow realisation that <code>nmap -sV</code> is not the whole job. It's barely the first ten minutes of it. The early boxes teach mechanics — enumerate services, find the version, match it to a known exploit, get a shell, escalate. That loop is necessary and it is also not the point.
+</p>
+
+<p>
+The point shows up somewhere around box forty, when the mechanics have gone quiet enough that you stop asking "what's the CVE" and start asking a better question: <em>what did the person who built this assume, and where did they stop checking?</em> That reframing is the whole return on the grind. A service running as root that didn't need to be. A backup script with an unquoted wildcard. A credential that crosses a trust boundary because someone was tired on a Friday. After enough machines, those stop being individual tricks and become a single instinct for where the soft spot is.
+</p>
+
+<blockquote>
+Volume beats cleverness early on. The ninetieth box teaches you less than the tenth — but you cannot get to the tenth without grinding through the first nine. Grind first, get selective later.
+</blockquote>
+
+<h2>$ a methodology that survived the volume</h2>
+
+<p>
+The rough shape I settled into, box after box:
+</p>
+
+<pre><code>1. enumerate everything, then enumerate again — the foothold
+   is usually in the service you dismissed on the first pass
+2. understand the app before attacking it; know why the bug
+   exists, not just that a script exists for it
+3. get the least-privilege foothold, then treat the box as a
+   fresh enumeration problem from the inside
+4. escalate on misconfiguration and trust, not just kernel CVEs
+5. write down what actually cost you time — that's the note
+   worth keeping</code></pre>
+
+<p>
+Step one is the one beginners skip and everyone else swears by. The foothold is almost always in the thing you glanced at and moved past — the odd port, the unlabelled vhost, the service you assumed was default. "Enumerate again" has unstuck more of my boxes than any single exploit.
+</p>
+
+<h2>$ the ones that stuck</h2>
+
+<p>
+A handful earned permanent residence in memory — <strong>Fulcrum</strong>, <strong>FluxCapacitor</strong>, <strong>Ariekei</strong>, <strong>Node</strong>, <strong>Shrek</strong> among them. They're the ones that broke my assumptions rather than rewarding them: boxes where the obvious path was a dead end, where the real route ran through a layer I'd written off, where "the perimeter" turned out to be a lie because there was always another network, another container, another thing behind the thing.
+</p>
+
+<p>
+The specific solves belong in their own writeups — the kind with the actual commands and the actual dead ends, which is the only kind worth reading. Those are coming, one box at a time. This post is the map; the terrain follows.
+</p>
+
+<h2>$ the part nobody advertises</h2>
+
+<p>
+The reason this all mattered later: every offensive technique on these boxes has a signature in the logs. Learning to move quietly through a machine is also learning exactly what "quiet" looks like from the defender's chair — and that turned out to be the foundation for the detection work I care about now. You can't write a good detection for an attack you've never had to perform. The boxes were where I performed them.
+</p>
+
+<footer>
+<p>
+<a href="https://github.com/b17w1z4rd">github.com/b17w1z4rd</a> &middot; profiles under <code>b17w1z4rd</code>
+</p>
+<p>
+<a href="../blog.html">&larr; back to all posts</a>
+</p>
+</footer>
+
+</main>
+
+</body>
+</html>

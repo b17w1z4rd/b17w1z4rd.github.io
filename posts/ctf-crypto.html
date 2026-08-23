@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The Crypto Attacks I Reach For | Shashank Patil</title>
+<meta name="description" content="RSA with structured primes, MT19937 state recovery, LCG lattice attacks, and one genuinely exotic key-agreement scheme — the CTF crypto techniques I keep coming back to.">
+
+<style>
+
+body{
+background:black;
+color:#00ff9c;
+font-family:monospace;
+margin:0;
+padding:0;
+}
+
+nav{
+padding:15px;
+border-bottom:1px solid #00ff9c;
+}
+
+nav a{
+color:#00ff9c;
+margin-right:20px;
+text-decoration:none;
+}
+
+nav a:hover{
+text-decoration:underline;
+}
+
+main{
+max-width:800px;
+margin:0 auto;
+padding:40px 20px 80px 20px;
+line-height:1.75;
+font-size:15px;
+}
+
+h1{
+line-height:1.3;
+}
+
+h2{
+margin-top:55px;
+border-bottom:1px solid #00ff9c;
+padding-bottom:8px;
+}
+
+h3{
+margin-top:35px;
+}
+
+a{
+color:#00ff9c;
+}
+
+.meta{
+opacity:0.65;
+font-size:13px;
+margin-bottom:40px;
+}
+
+code{
+background:#062;
+color:#c9ffe8;
+padding:1px 5px;
+}
+
+pre{
+border:1px solid #00ff9c;
+padding:15px;
+overflow-x:auto;
+font-size:13px;
+line-height:1.5;
+}
+
+pre code{
+background:none;
+color:#00ff9c;
+padding:0;
+}
+
+blockquote{
+border-left:3px solid #00ff9c;
+margin:30px 0;
+padding:5px 0 5px 20px;
+opacity:0.9;
+}
+
+ul{
+padding-left:20px;
+}
+
+li{
+margin-bottom:8px;
+}
+
+footer{
+border-top:1px solid #00ff9c;
+margin-top:60px;
+padding-top:20px;
+font-size:13px;
+opacity:0.8;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<nav>
+<a href="../index.html">Home</a>
+<a href="../blog.html">Blog</a>
+<a href="https://github.com/b17w1z4rd">GitHub</a>
+</nav>
+
+<main>
+
+<h1>$ cat crypto-attacks.md</h1>
+
+<p class="meta">
+Shashank Patil &middot; the CTF category where the answer is unambiguously right or wrong
+</p>
+
+<p>
+Crypto is my favourite CTF category, and the reason is discipline: there's no partial credit and no hand-waving. The maths either divides or it doesn't. Every crypto challenge is the same underlying exercise — read someone else's implementation and find the one assumption they didn't state out loud. This is a map of the attack classes I keep coming back to.
+</p>
+
+<h2>$ rsa when the primes aren't random</h2>
+
+<p>
+RSA is only as strong as the difficulty of factoring the modulus <code>N = p·q</code>. That difficulty evaporates the moment <code>p</code> and <code>q</code> stop being large, independent, well-chosen randoms — and in CTFs, they almost never are, because the challenge author needs a solvable puzzle.
+</p>
+
+<p>
+The tells I check first:
+</p>
+
+<ul>
+<li><strong>Structured primes.</strong> When a factor is close to a round form — a Mersenne prime of shape <code>2^k - 1</code>, or something with a predictable bit pattern — the search space collapses from "astronomical" to "a script and some patience." Recognising the structure <em>is</em> the challenge; the factoring is bookkeeping after that.</li>
+<li><strong>Primes too close together.</strong> If <code>p</code> and <code>q</code> are near each other, Fermat's method walks in from <code>√N</code> and finds them almost immediately.</li>
+<li><strong>Shared factors across moduli.</strong> Given a batch of public keys, a pairwise GCD sweep will occasionally hand you a common prime for free — a real-world failure, not just a CTF trope.</li>
+<li><strong>Tiny exponents and no padding.</strong> Low-<code>e</code> encryption of a small or related message opens up cube-root and related-message attacks.</li>
+</ul>
+
+<blockquote>
+The lesson that carries beyond CTFs: textbook RSA has no margin for laziness. Every one of these attacks is a real deployment mistake someone has shipped. The puzzle just removes the noise so you can see the mistake clearly.
+</blockquote>
+
+<h2>$ predicting the "random"</h2>
+
+<p>
+A whole family of challenges hinges on a pseudo-random generator that was never meant to be adversarial. The Mersenne Twister — <code>MT19937</code>, the default PRNG in a lot of languages — is the classic target.
+</p>
+
+<p>
+It is not cryptographically secure, and the reason is concrete: its entire future is a deterministic function of a fixed-size internal state. Observe enough consecutive 32-bit outputs, reverse the output tempering to recover the state words, and from that point you can reproduce every number it will ever emit. No secret is broken because there was never a secret — just an internal state that leaks itself one output at a time.
+</p>
+
+<p>
+The recurring shape of these challenges:
+</p>
+
+<pre><code>1. collect consecutive PRNG outputs from the service
+2. untemper each output back to a state word
+3. reconstruct the full internal state
+4. clone the generator, predict the value that gates the flag</code></pre>
+
+<p>
+The same mindset applies to any generator that leaks structure — the point is to stop treating "random" as a black box and start treating it as a state machine you can rebuild.
+</p>
+
+<h2>$ lcg and lattices</h2>
+
+<p>
+Linear congruential generators —<code>x_{n+1} = (a·x_n + c) mod m</code> — are even friendlier. With enough outputs the parameters <code>a</code>, <code>c</code> and <code>m</code> fall out of simple algebra. The interesting version is when the challenge only gives you <em>truncated</em> outputs — the high bits of each value — and expects that to be safe.
+</p>
+
+<p>
+It isn't. Truncated-LCG recovery is a lattice problem: express the hidden low bits as short vectors in a carefully built lattice, run <code>LLL</code> reduction, and the reduced basis reveals the missing state. Lattice reduction is the single most transferable tool in CTF crypto — the same LLL that breaks a truncated LCG shows up in knapsack schemes, in Coppersmith-style small-root attacks on RSA, and in half the "weird custom scheme" challenges on any given scoreboard.
+</p>
+
+<h2>$ the exotic one</h2>
+
+<p>
+Occasionally a challenge reaches past the standard playbook into research-grade territory. The most unusual one I've worked was a key-agreement scheme built over the <strong>plactic monoid</strong> — the algebraic structure that comes from Knuth equivalence on words, closely tied to semistandard Young tableaux.
+</p>
+
+<p>
+It's proposed as a non-commutative alternative to the usual group-based key exchanges, and its security rests on problems in that monoid being hard. The value of a challenge like this isn't a reusable trick — it's the exercise of taking an unfamiliar algebraic object, understanding what operation the protocol actually depends on, and finding the structural shortcut its designers hoped wasn't there. That's the same muscle as every other crypto challenge, just with less familiar scaffolding around it.
+</p>
+
+<h2>$ why crypto makes you better at everything else</h2>
+
+<p>
+None of this stayed in the crypto lane. Reading a cipher implementation for its unstated assumption is exactly the reading you do in a security code review — and it's the same instinct that lets you write detection for an attack, because in both cases you're hunting for the constraint the other side couldn't avoid. Crypto just trains it under the strictest possible grading: right, or wrong, with nothing in between.
+</p>
+
+<footer>
+<p>
+CTF handle <code>b17w1z4rd</code> &middot; <a href="https://github.com/b17w1z4rd">github.com/b17w1z4rd</a>
+</p>
+<p>
+<a href="../blog.html">&larr; back to all posts</a>
+</p>
+</footer>
+
+</main>
+
+</body>
+</html>
