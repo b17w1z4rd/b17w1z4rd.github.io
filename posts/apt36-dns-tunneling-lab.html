@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hunting APT36 Infrastructure, and Building the Detection | Shashank Patil</title>
+<meta name="description" content="Two halves of one discipline: tracking a live adversary's infrastructure, and building a DNS tunneling detection lab with Wazuh, Sysmon, and dnscat2.">
+
+<style>
+
+body{
+background:black;
+color:#00ff9c;
+font-family:monospace;
+margin:0;
+padding:0;
+}
+
+nav{
+padding:15px;
+border-bottom:1px solid #00ff9c;
+}
+
+nav a{
+color:#00ff9c;
+margin-right:20px;
+text-decoration:none;
+}
+
+nav a:hover{
+text-decoration:underline;
+}
+
+main{
+max-width:800px;
+margin:0 auto;
+padding:40px 20px 80px 20px;
+line-height:1.75;
+font-size:15px;
+}
+
+h1{
+line-height:1.3;
+}
+
+h2{
+margin-top:55px;
+border-bottom:1px solid #00ff9c;
+padding-bottom:8px;
+}
+
+h3{
+margin-top:35px;
+}
+
+a{
+color:#00ff9c;
+}
+
+.meta{
+opacity:0.65;
+font-size:13px;
+margin-bottom:40px;
+}
+
+code{
+background:#062;
+color:#c9ffe8;
+padding:1px 5px;
+}
+
+pre{
+border:1px solid #00ff9c;
+padding:15px;
+overflow-x:auto;
+font-size:13px;
+line-height:1.5;
+}
+
+pre code{
+background:none;
+color:#00ff9c;
+padding:0;
+}
+
+blockquote{
+border-left:3px solid #00ff9c;
+margin:30px 0;
+padding:5px 0 5px 20px;
+opacity:0.9;
+}
+
+ul{
+padding-left:20px;
+}
+
+li{
+margin-bottom:8px;
+}
+
+.note{
+border:1px dashed #00ff9c;
+padding:14px 18px;
+margin:30px 0;
+opacity:0.85;
+font-size:13.5px;
+}
+
+footer{
+border-top:1px solid #00ff9c;
+margin-top:60px;
+padding-top:20px;
+font-size:13px;
+opacity:0.8;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<nav>
+<a href="../index.html">Home</a>
+<a href="../blog.html">Blog</a>
+<a href="https://github.com/b17w1z4rd">GitHub</a>
+</nav>
+
+<main>
+
+<h1>$ cat apt36-and-detection.md</h1>
+
+<p class="meta">
+Shashank Patil &middot; tracking a live adversary, then building the detection
+</p>
+
+<p>
+This is a purple-team post in the most literal sense. The first half is offensive threat intelligence — tracking the infrastructure of a real, active adversary as it moved. The second half is defensive engineering — a lab that catches a covert-channel technique the same class of adversary relies on. They're the two sides of the same coin, and I don't think you can do either one well without the other.
+</p>
+
+<h2>$ part i &mdash; know the adversary</h2>
+
+<p>
+<strong>APT36</strong> — also tracked as Transparent Tribe, Mythic Leopard, Earth Karkaddan, ProjectM, and C-Major — is a Pakistan-aligned cyber-espionage group that's been active since at least 2013. If you work security in India, you know the name. Their targeting is consistent and political: Indian government, military, defense contractors, diplomatic staff, research centres, and — increasingly — the education sector.
+</p>
+
+<p>
+Their tradecraft is well documented, and worth internalising because it tells you where to look:
+</p>
+
+<ul>
+<li><strong>Spear-phishing</strong> as the front door — weaponised Office documents and, more recently, Windows shortcut (<code>.LNK</code>) files disguised as PDFs, often staged inside archives or ISO images.</li>
+<li><strong>Living off trusted binaries</strong> — abusing signed Windows utilities like <code>mshta.exe</code> to run payloads in memory without touching disk, which defeats a lot of naive file-based detection.</li>
+<li><strong>A cross-platform RAT arsenal</strong> — Crimson RAT on Windows, CapraRAT on Android (a fork of the open-source AndroRAT), and others in rotation.</li>
+<li><strong>Impersonation infrastructure</strong> — fake domains that mimic legitimate Indian government portals and services, used for credential harvesting and malware delivery.</li>
+</ul>
+
+<p>
+That last point is the one this post cares about. Impersonation and command-and-control both need <em>infrastructure</em> — domains, certificates, hosting — and infrastructure is a thing you can hunt.
+</p>
+
+<h2>$ hunting the infrastructure</h2>
+
+<p>
+Adversaries don't stand still. Domains get burned and re-registered, C2 moves hosts, certificates get reissued. Threat intel isn't a static list of bad IPs — it's tracking that <em>migration</em>, because the goal is to be looking at the next piece of infrastructure before it's used in anger.
+</p>
+
+<p>
+The hunt is a pivoting exercise. You start from one known artifact and follow the threads it shares with others:
+</p>
+
+<ul>
+<li><strong>Passive DNS</strong> — historical resolution data links domains to IPs and back over time, exposing shared hosting and rotation patterns.</li>
+<li><strong>Certificate transparency</strong> — TLS certificates are logged publicly; a reused certificate, a distinctive subject, or an issuance pattern ties separate domains to the same operator.</li>
+<li><strong>Registration fingerprints</strong> — WHOIS details, registrar choices, name-server patterns, and the naming conventions an actor favours (the shape of their typosquats).</li>
+<li><strong>Network-level fingerprints</strong> — things like JARM/TLS-stack signatures and favicon hashes that survive a domain change because the underlying server didn't.</li>
+</ul>
+
+<p>
+I ran this live at a <strong>CTICON</strong> threat-intelligence hunting session focused on APT36 infrastructure migration — not a lab, not retired data, but adversary infrastructure moving while we looked at it. The pivots led somewhere: the session surfaced indicators that hadn't been published anywhere.
+</p>
+
+<blockquote>
+There's a specific feeling when a pivot lands on live infrastructure and something genuinely new falls out. It's the same rush as first blood on a CTF — except the scoreboard is somebody's incident-response timeline.
+</blockquote>
+
+<div class="note">
+A note on responsibility: specific indicators from a live hunt belong in the right channels — shared under the appropriate handling caveats with the people who can action them — not dropped into a public blog post. Attribution and IOCs carry weight; people build blocks and open cases off them. So this post is about the <em>method</em>, not a dump of the findings.
+</div>
+
+<h2>$ the bridge</h2>
+
+<p>
+Here's the thread that connects the two halves. Every actor that relies on infrastructure has to move data in and out of a target network — beaconing, tasking, exfiltration — and to do that quietly, they reach for the protocols defenders under-monitor. DNS is the softest of those targets. It's allowed outbound almost everywhere, it's ignored by a surprising number of monitoring stacks, and it will happily carry a covert channel if you don't mind the throughput of a 1998 modem.
+</p>
+
+<p>
+DNS tunneling isn't the signature of any one group — it's a <em>class</em> of technique. Which makes it exactly the kind of thing worth building detection for, because the detection generalises. So I built a lab to do precisely that: run the attack, then catch it.
+</p>
+
+<h2>$ part ii &mdash; the dns tunneling lab</h2>
+
+<p>
+DNS tunneling encodes data into DNS queries and responses. An implant chops its payload into chunks, encodes each chunk into the labels of a hostname, and queries a domain whose authoritative server the attacker controls. The server reads the incoming labels as data and answers with more data in the response records. No connection ever "looks like" exfiltration — it's just a client asking about hostnames.
+</p>
+
+<p>
+The lab has three roles:
+</p>
+
+<pre><code>attacker  : dnscat2 server, authoritative for a lab domain
+victim    : Windows endpoint, Sysmon + Wazuh agent installed
+defender  : Wazuh manager, custom decoders and rules
+goal      : exfiltrate over DNS, then catch myself doing it</code></pre>
+
+<p>
+<strong>dnscat2</strong> is the offensive half — a purpose-built DNS tunneling C2 that establishes an encrypted channel entirely over DNS. On the victim, <strong>Sysmon</strong> is doing the heavy lifting for visibility: its DNS query event (Event ID 22) records not just the query, but <em>which process made it</em>. That process context matters enormously — a resolution coming from a browser is background noise; the same pattern coming from an unexpected binary is a lead. <strong>Wazuh</strong> ingests that telemetry and is where the detection logic lives.
+</p>
+
+<h3>$ what the detection actually keys on</h3>
+
+<p>
+The naive rule is "alert on long DNS names," which pages you about every CDN and cloud endpoint on the internet. The signals that actually separate a tunnel from normal traffic are behavioural — the <em>shape</em> of the traffic, not any single packet:
+</p>
+
+<ul>
+<li><strong>Label entropy.</strong> Encoded payload doesn't look like <code>www</code> or <code>mail</code>; the character distribution of the query label is closer to random. High entropy is a strong first filter.</li>
+<li><strong>Unique subdomain cardinality.</strong> A tunnel burns through a huge number of unique labels under one parent domain in a short window; a normal client re-queries a small, stable set. Counting uniqueness per parent domain over time is one of the cleanest tells.</li>
+<li><strong>Query rate and regularity.</strong> An implant beacons on a rhythm; a human browses in bursts. Inter-arrival timing gives the channel away.</li>
+<li><strong>Record-type distribution.</strong> Heavy use of <code>TXT</code> and <code>NULL</code> records — great for stuffing data into responses — is disproportionate compared to normal <code>A</code>/<code>AAAA</code> traffic.</li>
+<li><strong>Process context.</strong> The Sysmon piece — the resolving binary is often the difference between "ignore" and "investigate."</li>
+</ul>
+
+<p>
+Wired into Wazuh with custom decoders and rules, the lab generated <strong>834+ confirmed alerts</strong> across the test runs. The raw count was never the interesting part, though. The interesting part was the <em>tuning</em> — the first cut of the ruleset was loud in exactly the way real SOC rules are loud, and the engineering was in cutting the false positives without going blind to the actual tunnel. That trade-off is the entire discipline of detection, compressed into one lab.
+</p>
+
+<div class="note">
+The specific Sysmon configuration and the Wazuh decoder/rule set that back this lab are their own thing, and I'll fold the real rule logic into this post as a follow-up. If you're building something similar and want to compare notes, reach out.
+</div>
+
+<h2>$ why the two halves belong together</h2>
+
+<p>
+The detection only exists because I understood the attacker's position — what they have to do, and where they have no choice about it. Every covert channel has a constraint it cannot escape. For DNS tunneling, it's that you <em>must</em> keep generating fresh labels to move data; you cannot tunnel through a small, static set of hostnames. Find the constraint the adversary can't avoid, and you've found your detection.
+</p>
+
+<p>
+That's the whole thesis. Hunt the infrastructure to understand how the adversary operates; build the detection for the techniques that understanding reveals. Offense and defense aren't two jobs — they're one loop, and the CTICON hunt and this lab are the same loop running in two directions.
+</p>
+
+<footer>
+<p>
+Handle <code>b17w1z4rd</code> &middot; <a href="https://github.com/b17w1z4rd">github.com/b17w1z4rd</a>
+</p>
+<p>
+<a href="../blog.html">&larr; back to all posts</a>
+</p>
+</footer>
+
+</main>
+
+</body>
+</html>
