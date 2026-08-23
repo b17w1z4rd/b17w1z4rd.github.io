@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Four Years of Breaking Things | Shashank Patil</title>
+<meta name="description" content="From HackTheBox boxes and CTF crypto to building the detection that catches the attack — how offense and defense stopped being two hobbies.">
+
+<style>
+
+body{
+background:black;
+color:#00ff9c;
+font-family:monospace;
+margin:0;
+padding:0;
+}
+
+nav{
+padding:15px;
+border-bottom:1px solid #00ff9c;
+}
+
+nav a{
+color:#00ff9c;
+margin-right:20px;
+text-decoration:none;
+}
+
+nav a:hover{
+text-decoration:underline;
+}
+
+main{
+max-width:800px;
+margin:0 auto;
+padding:40px 20px 80px 20px;
+line-height:1.75;
+font-size:15px;
+}
+
+h1{
+line-height:1.3;
+}
+
+h2{
+margin-top:55px;
+border-bottom:1px solid #00ff9c;
+padding-bottom:8px;
+}
+
+h3{
+margin-top:35px;
+}
+
+a{
+color:#00ff9c;
+}
+
+.meta{
+opacity:0.65;
+font-size:13px;
+margin-bottom:40px;
+}
+
+code{
+background:#062;
+color:#c9ffe8;
+padding:1px 5px;
+}
+
+pre{
+border:1px solid #00ff9c;
+padding:15px;
+overflow-x:auto;
+font-size:13px;
+line-height:1.5;
+}
+
+pre code{
+background:none;
+color:#00ff9c;
+padding:0;
+}
+
+blockquote{
+border-left:3px solid #00ff9c;
+margin:30px 0;
+padding:5px 0 5px 20px;
+opacity:0.9;
+}
+
+ul{
+padding-left:20px;
+}
+
+li{
+margin-bottom:8px;
+}
+
+footer{
+border-top:1px solid #00ff9c;
+margin-top:60px;
+padding-top:20px;
+font-size:13px;
+opacity:0.8;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<nav>
+<a href="../index.html">Home</a>
+<a href="../blog.html">Blog</a>
+<a href="https://github.com/b17w1z4rd">GitHub</a>
+</nav>
+
+<main>
+
+<h1>$ cat four-years-of-breaking-things.md</h1>
+
+<p class="meta">
+Shashank Patil &middot; ~93 boxes, a pile of CTF crypto, and one detection lab that wouldn't stop firing
+</p>
+
+<p>
+Most security writeups pick one box and walk you through it. This one isn't that. This is the through-line — how I went from grinding retired HackTheBox machines to writing the detection rules that would have caught me doing it, and why those turned out to be the same skill.
+</p>
+
+<h2>$ the enumeration years</h2>
+
+<p>
+Everyone starts the same way: a VPN config, a target IP, and the crushing realisation that <code>nmap -sV</code> is not, in fact, the whole job.
+</p>
+
+<p>
+I did the reps. Somewhere north of ninety machines across TryHackMe and HackTheBox, and the ones I remember aren't the easy ones — <strong>Fulcrum</strong>, <strong>FluxCapacitor</strong>, <strong>Ariekei</strong>, <strong>Node</strong>, <strong>Shrek</strong>. Ariekei in particular is the box that taught me that "the perimeter" is a lie you tell yourself; there's always another container, another host-only network, another thing behind the thing.
+</p>
+
+<p>
+What the volume actually bought me wasn't a list of exploits. It was pattern recognition for <em>where people put the mistake</em>. A service running as root that didn't need to be. A backup script with a wildcard. A shared credential that crossed a trust boundary because someone was tired on a Friday. After enough boxes you stop asking "what's the CVE" and start asking "what did the person who built this assume, and where did they stop checking?"
+</p>
+
+<p>
+I ran the same idea through PentesterLab PRO in a more structured way — working the API, Unix, SQL injection, Android and Java deserialization badge tracks end to end. Badges are gamified, sure, but the deserialization track in particular rewired how I read Java code. Once you've built a gadget chain by hand, you never look at a <code>readObject()</code> the same way again.
+</p>
+
+<h2>$ ctf — where the interesting failures live</h2>
+
+<p>
+CTFs are where I stopped being comfortable, which is the point. I've played BushBash, L3AK, STARPWN, DEF CON quals, Triada, JerseyCTF, and a stack of others under <code>b17w1z4rd</code>.
+</p>
+
+<p>
+The category spread ended up being the education:
+</p>
+
+<ul>
+<li><strong>Crypto</strong> — RSA cryptanalysis where the modulus had a Mersenne prime hiding in it, MT19937 state recovery from leaked outputs, LCG parameter recovery via lattice reduction, and one genuinely strange key agreement scheme built on the plactic monoid. Crypto challenges are the only category where the answer is unambiguously right or wrong, and that discipline is good for you.</li>
+<li><strong>Binary exploitation</strong> — stack overflows into ROP chains, the usual dance with leaks and offsets. Pwn is where you learn that the machine does not care what you meant.</li>
+<li><strong>Web</strong> — JWT forgery, CSRF bypasses, XXE, and my favourite category of bug, LaTeX injection, because nothing says "arbitrary file read" like a document compiler someone forgot was a full programming language.</li>
+<li><strong>Forensics</strong> — pcap analysis, steganography, USB HID traffic reconstruction. Forensics is the category that made me a better defender, and I didn't notice at the time.</li>
+<li><strong>AI</strong> — prompt injection against agent-based challenges. This category barely existed a few years ago and now it's on every scoreboard. The attack surface moved and nobody sent a memo.</li>
+</ul>
+
+<blockquote>
+The useful thing about CTF crypto isn't the maths. It's that you're forced to read someone else's implementation looking for the one assumption they didn't state out loud. That's the same reading you do in a code review, just with a scoreboard attached.
+</blockquote>
+
+<h2>$ the switch</h2>
+
+<p>
+At some point the question flipped. I'd spent years learning how to move through a network quietly. What I hadn't done was sit on the other side and ask: <em>what does that actually look like in the logs?</em>
+</p>
+
+<p>
+So I built a lab to find out. The setup:
+</p>
+
+<pre><code>attacker  : dnscat2 server, authoritative for a lab domain
+victim    : Windows endpoint, Sysmon + Wazuh agent
+defender  : Wazuh manager, custom decoders and rules
+goal      : exfiltrate over DNS, then catch myself doing it</code></pre>
+
+<p>
+DNS tunneling is a great target for this because DNS is the protocol nobody blocks. It's allowed outbound almost everywhere, it's ignored by half the monitoring stacks I've seen, and it's a perfectly serviceable covert channel if you don't mind the throughput of a 1998 modem.
+</p>
+
+<p>
+The naive detection is "alert on long DNS queries," which fires on every CDN and content-security vendor on the internet. The signals that actually held up were behavioural rather than static — the shape of the traffic rather than any single packet:
+</p>
+
+<ul>
+<li>Character entropy in the query label, since encoded payload doesn't look like <code>www</code> or <code>mail</code></li>
+<li>Unique subdomain cardinality per parent domain over a time window — a tunnel burns through unique labels, a normal client does not</li>
+<li>Query rate and inter-arrival regularity, because an implant beacons and a human browses</li>
+<li>Record type distribution, since heavy <code>TXT</code> and <code>NULL</code> use is a strong tell</li>
+<li>Process context from Sysmon — <em>which binary</em> is making the resolution matters more than the resolution itself</li>
+</ul>
+
+<p>
+Wired into Wazuh with custom decoders and rules, the lab produced <strong>834+ confirmed alerts</strong> across the test runs. The number isn't the interesting part. The interesting part was the tuning — the first version of the ruleset was loud in exactly the way real SOC rules are loud, and cutting the false positives without going blind to the actual tunnel is where the engineering was.
+</p>
+
+<p>
+That lab is the moment offense and defense stopped being two separate hobbies for me. I could only write the detection because I knew precisely what the attacker had to do, and where they had no choice about it. Every covert channel has a constraint it cannot escape — for DNS tunneling, it's that you have to keep generating fresh labels. Find the constraint, and you have your detection.
+</p>
+
+<h2>$ research</h2>
+
+<p>
+The lab work fed into something bigger. I spent a stretch on ransomware detection — building a behavioural pipeline on Wazuh and LimaCharlie telemetry, then layering ML on top of it, with LightGBM doing the heavy lifting on the classification side.
+</p>
+
+<p>
+The honest lesson from that work: the model is the easy part. Getting clean, correctly-labelled behavioural telemetry out of endpoints, deciding what a "detection window" even means when encryption takes eleven seconds, and building an evaluation that doesn't quietly leak the answer — that's where the months go. Anyone can call <code>fit()</code>.
+</p>
+
+<p>
+That work became a hybrid ransomware detection manuscript with Prof. Prasad B Honnavalli and Swetha P, now through two rounds of major revision at IEEE Access. Twenty-six reviewer concerns across those rounds. Peer review is the most thorough adversarial testing my work has ever received, and I mean that as a compliment to the reviewers.
+</p>
+
+<h2>$ live fire</h2>
+
+<p>
+The most recent thing, and the one that felt least like an exercise: a live threat intelligence hunting session tracking <strong>APT36</strong> infrastructure migration. Not a lab, not a retired box — actual adversary infrastructure, moving while we looked at it. We surfaced several indicators that hadn't been published anywhere.
+</p>
+
+<p>
+There's a specific feeling when the pivot works on real infrastructure and something new falls out. It is the exact feeling as a first blood on a CTF challenge, except the scoreboard is somebody's incident response timeline.
+</p>
+
+<h2>$ lessons</h2>
+
+<p>
+Four years compressed into the things I'd tell myself at the start:
+</p>
+
+<ul>
+<li><strong>Volume beats cleverness, early on.</strong> The ninetieth box teaches you less than the tenth, but you can't get to the tenth without the first nine. Grind first, get selective later.</li>
+<li><strong>Learn the defensive side before you think you need it.</strong> Every attack technique has a telemetry signature. Knowing that signature makes you a better attacker, not just a better defender — you learn what's actually quiet versus what merely feels quiet.</li>
+<li><strong>Write the detection for your own attack.</strong> It's the fastest way to find out whether you actually understood the technique or just ran the tool.</li>
+<li><strong>Tuning is the job.</strong> Anybody can write a rule that catches the attack. Writing one that catches the attack and doesn't page someone at 3am about a CDN is the entire discipline.</li>
+<li><strong>The constraint is the detection.</strong> Find the thing the attacker cannot avoid doing, and build there.</li>
+</ul>
+
+<h2>$ whats_next</h2>
+
+<p>
+More of the same, pointed harder. Cloud security depth, more detection engineering, and a growing interest in where AI systems and security meet — because if prompt injection is already a CTF category, it's already an incident category somewhere.
+</p>
+
+<p>
+The writeups are coming. This was the map; the terrain posts follow.
+</p>
+
+<footer>
+<p>
+Find me: <a href="https://github.com/b17w1z4rd">github.com/b17w1z4rd</a> &middot; CTF handle <code>b17w1z4rd</code>
+</p>
+<p>
+<a href="../blog.html">&larr; back to all posts</a>
+</p>
+</footer>
+
+</main>
+
+</body>
+</html>
