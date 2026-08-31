@@ -100,6 +100,26 @@ footer{border-top:1px solid var(--border);padding:50px clamp(20px,5vw,48px);}
 </header>
 
 <main>
+<a href="posts/hacksmarter-shadowgate.html" class="post reveal">
+<div class="tag">ACTIVE DIRECTORY</div>
+<h2>ShadowGate: Null Session to krbtgt via ADCS ESC8</h2>
+<p>Black-box Active Directory &mdash; anonymous SMB user enumeration, an AS-REP roast, a Shadow Credentials attack off a loose <code>GenericWrite</code>, then an ADCS ESC8 relay to mint a domain-controller certificate and DCSync the krbtgt.</p>
+<span class="more">Read post <span class="arrow">&#8599;</span></span>
+</a>
+
+<a href="posts/hacksmarter-hunter.html" class="post reveal">
+<div class="tag">WEB</div>
+<h2>Hunter: A Username Oracle Hidden in Response Time</h2>
+<p>A login portal that returns byte-identical responses for valid and invalid users &mdash; defeating size-based enumeration &mdash; but leaks the same fact through the password-reset handler's latency. Finding the account by timing alone.</p>
+<span class="more">Read post <span class="arrow">&#8599;</span></span>
+</a>
+
+<a href="posts/hacksmarter-assume.html" class="post reveal">
+<div class="tag">CLOUD</div>
+<h2>Assume: PassRole into Lambda, Lambda into Secrets Manager</h2>
+<p>A pure AWS IAM box &mdash; a low-priv user with <code>sts:AssumeRole</code> on <code>*</code> pivots into a role holding <code>iam:PassRole</code>, then abuses it to run a Lambda as a privileged role and read the flag out of Secrets Manager.</p>
+<span class="more">Read post <span class="arrow">&#8599;</span></span>
+</a>
 
 <a href="posts/hacksmarter-banksmarter.html" class="post reveal">
 <div class="tag">LINUX</div>

